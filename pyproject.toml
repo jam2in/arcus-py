@@ -22,11 +22,15 @@ classifiers = [
     "Programming Language :: Python :: 3.15",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-dependencies = ["kazoo>=2.10,<3"]
+dependencies = [
+    "kazoo>=2.10,<3",
+    "logger>=1.4",
+]
 
 [dependency-groups]
 dev = [
     "pytest>=8",
+    "pytest-mock>=3.17.0",
     "pytest-timeout>=2.3",
     "ruff==0.17.1",
     "ty==0.0.90",
