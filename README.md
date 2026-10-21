@@ -17,9 +17,12 @@ uv sync    # create .venv with runtime and dev dependencies
 
 uv run ruff check .
 uv run ruff format --check .
+uv run ty check
 uv run pytest
 uv build
 ```
+
+All functions and methods must be fully type-annotated (enforced by ruff `ANN` and `ty`).
 
 ## License
 
