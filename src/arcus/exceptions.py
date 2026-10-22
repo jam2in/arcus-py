@@ -11,3 +11,7 @@ class ArcusConnectionError(ArcusError):
 
 class ArcusTimeoutError(ArcusError, TimeoutError):
     """An Arcus operation exceeded its time limit."""
+
+
+class ArcusDecodeError(ArcusError):
+    """A cached value was received but could not be decoded."""
