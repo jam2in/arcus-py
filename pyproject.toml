@@ -67,6 +67,7 @@ line-ending = "lf"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["tests"]
 addopts = "--strict-config --strict-markers --import-mode=importlib"
 timeout = 30
 markers = ["integration: requires an isolated Arcus and ZooKeeper service"]

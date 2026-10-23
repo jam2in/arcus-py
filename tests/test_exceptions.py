@@ -2,13 +2,19 @@ import pytest
 
 import arcus
 from arcus.exceptions import (
+    ArcusClientError,
     ArcusConnectionError,
+    ArcusDecodeError,
     ArcusError,
+    ArcusServerError,
     ArcusTimeoutError,
 )
 
 ALL_ERRORS = [
+    ArcusClientError,
     ArcusConnectionError,
+    ArcusDecodeError,
+    ArcusServerError,
     ArcusTimeoutError,
 ]
 
