@@ -15,3 +15,11 @@ class ArcusTimeoutError(ArcusError, TimeoutError):
 
 class ArcusDecodeError(ArcusError):
     """A cached value was received but could not be decoded."""
+
+
+class ArcusClientError(ArcusError):
+    """The cache server rejected the request as invalid (CLIENT_ERROR)."""
+
+
+class ArcusServerError(ArcusError):
+    """The cache server failed to process the request (SERVER_ERROR)."""
