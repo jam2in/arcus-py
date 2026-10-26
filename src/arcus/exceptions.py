@@ -12,8 +12,12 @@ class ArcusConnectionError(ArcusError):
     """
 
 
-class ArcusTimeoutError(ArcusError, TimeoutError):
-    """An Arcus operation exceeded its time limit."""
+class ArcusOperationTimeoutError(ArcusError, TimeoutError):
+    """A request was sent but did not complete in time; its outcome is unknown."""
+
+
+class ArcusPoolTimeoutError(ArcusError, TimeoutError):
+    """No cache connection became available within the pool timeout."""
 
 
 class ArcusDecodeError(ArcusError):
