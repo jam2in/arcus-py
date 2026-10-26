@@ -7,8 +7,9 @@ from .exceptions import (
     ArcusConnectionError,
     ArcusDecodeError,
     ArcusError,
+    ArcusOperationTimeoutError,
+    ArcusPoolTimeoutError,
     ArcusServerError,
-    ArcusTimeoutError,
 )
 
 __version__ = version("arcus-py")
@@ -18,7 +19,8 @@ __all__ = [
     "ArcusConnectionError",
     "ArcusDecodeError",
     "ArcusError",
+    "ArcusOperationTimeoutError",
+    "ArcusPoolTimeoutError",
     "ArcusServerError",
-    "ArcusTimeoutError",
     "__version__",
 ]

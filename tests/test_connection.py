@@ -1,9 +1,11 @@
 import socket
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from pytest_mock import MockerFixture, MockType
 
-from arcus import ArcusConnectionError, ArcusTimeoutError
+from arcus import ArcusConnectionError, ArcusOperationTimeoutError
 from arcus._transport.sync.connection import SyncConnection
 
 ADDRESS = "127.0.0.1:11211"
@@ -166,7 +168,7 @@ def test_recv_returns_partial_response(
 @pytest.mark.parametrize(
     ("error", "expected_error"),
     [
-        pytest.param(TimeoutError(), ArcusTimeoutError, id="timeout"),
+        pytest.param(TimeoutError(), ArcusOperationTimeoutError, id="timeout"),
         pytest.param(ConnectionResetError(), ArcusConnectionError, id="reset"),
     ],
 )
@@ -192,7 +194,7 @@ def test_send_failure_closes_connection(
 @pytest.mark.parametrize(
     ("error", "expected_error"),
     [
-        pytest.param(TimeoutError(), ArcusTimeoutError, id="timeout"),
+        pytest.param(TimeoutError(), ArcusOperationTimeoutError, id="timeout"),
         pytest.param(ConnectionResetError(), ArcusConnectionError, id="reset"),
     ],
 )
@@ -290,10 +292,51 @@ def test_cleanup_failure_preserves_original_error(
     sock.close.side_effect = OSError("Socket close failed")
 
     # When: The request is sent.
-    with pytest.raises(ArcusTimeoutError) as exc_info:
+    with pytest.raises(ArcusOperationTimeoutError) as exc_info:
         connection.send(b"get key\r\n")
 
     # Then: The cleanup failure does not replace the original timeout.
     assert connection.broken
     sock.close.assert_called_once_with()
     assert exc_info.value.__cause__ is error
+
+
+def test_abort_shuts_down_socket(connection: SyncConnection, sock: MockType) -> None:
+    # Given: An open connection.
+
+    # When: The connection is aborted.
+    connection.abort()
+
+    # Then: The socket is shut down but left for the owner to close.
+    sock.shutdown.assert_called_once_with(socket.SHUT_RDWR)
+    sock.close.assert_not_called()
+    assert connection.broken
+
+
+def test_abort_ignores_socket_error(connection: SyncConnection, sock: MockType) -> None:
+    # Given: A socket that is already disconnected.
+    sock.shutdown.side_effect = OSError("not connected")
+
+    # When: The connection is aborted.
+    connection.abort()
+
+    # Then: The error is ignored.
+    assert connection.broken
+
+
+def test_abort_wakes_blocked_recv() -> None:
+    # Given: A thread blocked receiving from a silent peer.
+    client, peer = socket.socketpair()
+    client.settimeout(5)
+    connection = SyncConnection(ADDRESS, client)
+
+    with peer, ThreadPoolExecutor(1) as executor:
+        receiving = executor.submit(connection.recv)
+        time.sleep(0.05)
+
+        # When: Another thread aborts the connection.
+        connection.abort()
+
+        # Then: The receiver fails at once instead of waiting for the timeout.
+        with pytest.raises(ArcusConnectionError):
+            receiving.result(timeout=1)
