@@ -5,8 +5,8 @@ from kazoo.exceptions import KazooException, NoNodeError, OperationTimeoutError
 from kazoo.handlers.threading import KazooTimeoutError
 from kazoo.protocol.states import WatchedEvent
 
-from arcus import ArcusConnectionError
 from arcus._logging import logger
+from arcus.exceptions import ArcusConnectionError
 
 
 def parse_cache_list(children: list[str]) -> list[str]:

@@ -1,7 +1,8 @@
+import contextlib
 import socket
 
-from arcus import ArcusConnectionError, ArcusTimeoutError
 from arcus._logging import logger
+from arcus.exceptions import ArcusConnectionError, ArcusOperationTimeoutError
 
 _RECV_BUFFER_SIZE = 4096
 
@@ -53,13 +54,19 @@ class SyncConnection:
         except OSError:
             logger.exception(f"Failed to close cache connection: {self.address}")
 
+    def abort(self) -> None:
+        """Wake a request blocked on this connection from another thread."""
+        self.broken = True
+        with contextlib.suppress(OSError):
+            self._socket.shutdown(socket.SHUT_RDWR)
+
     def send(self, data: bytes) -> None:
         """Send all bytes without modifying the payload"""
         try:
             self._socket.sendall(data)
         except TimeoutError as error:
             self.close()
-            raise ArcusTimeoutError(
+            raise ArcusOperationTimeoutError(
                 f"Timed out sending to cache node: {self.address}"
             ) from error
         except OSError as error:
@@ -77,7 +84,7 @@ class SyncConnection:
             data = self._socket.recv(_RECV_BUFFER_SIZE)
         except TimeoutError as error:
             self.close()
-            raise ArcusTimeoutError(
+            raise ArcusOperationTimeoutError(
                 f"Timed out receiving from cache node: {self.address}"
             ) from error
         except OSError as error:
