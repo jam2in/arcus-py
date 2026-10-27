@@ -3,7 +3,7 @@ from hashlib import md5
 from struct import Struct
 from threading import Lock
 
-from arcus import ArcusConnectionError
+from arcus.exceptions import ArcusConnectionError
 
 _KETAMA_KEY_STRUCT = Struct("<I")
 _KETAMA_POINTS_STRUCT = Struct("<4I")
