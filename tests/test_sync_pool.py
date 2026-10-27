@@ -309,6 +309,22 @@ def test_close_is_idempotent(connect: MockType) -> None:
         pool.acquire()
 
 
+def test_close_again_aborts_connections_left_running(connect: MockType) -> None:
+    # Given: A pool closed without aborting a connection in use.
+    pool = make_pool(connect)
+    connection = pool.acquire()
+    pool.close(ArcusError("first"), abort_in_use=False)
+
+    # When: It is closed again with abort_in_use.
+    pool.close(ArcusError("second"), abort_in_use=True)
+
+    # Then: The connection is aborted, and the first reason is kept.
+    sock_of(connection).shutdown.assert_called_once_with(socket.SHUT_RDWR)
+    assert connection.broken
+    with pytest.raises(ArcusError, match="first"):
+        pool.acquire()
+
+
 def test_connect_finished_after_close_is_closed(connect: MockType) -> None:
     # Given: A connect that finishes after the pool is closed.
     pool = make_pool(connect)

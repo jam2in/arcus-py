@@ -7,10 +7,15 @@ from typing import Protocol, TypeVar
 from arcus._cluster.discovery import ArcusDiscovery
 from arcus._cluster.locator import ArcusLocator
 from arcus._config import ClientConfig
+from arcus._logging import logger
 from arcus._protocol.request import Exchange
 from arcus._transport.sync.connection import SyncConnection
 from arcus._transport.sync.pool import SyncConnectionPool
-from arcus.exceptions import ArcusConnectionError, ArcusError
+from arcus.exceptions import (
+    ArcusConnectionError,
+    ArcusError,
+    ArcusOperationTimeoutError,
+)
 
 T = TypeVar("T")
 
@@ -65,11 +70,46 @@ class SyncCluster:
         connection = pool.acquire()
         try:
             return connection.execute(exchange)
+        except (ArcusConnectionError, ArcusOperationTimeoutError) as error:
+            with self._condition:
+                closed = self._closed
+            if closed:
+                raise ArcusError("client is closed") from error
+            raise
         finally:
             pool.release(connection)
             with self._condition:
                 if pool in self._retired_pools and pool.in_use == 0:
                     self._retired_pools.discard(pool)
+
+    def close(self) -> None:
+        """Reject new requests, abort running ones and stop discovery."""
+        with self._condition:
+            if self._closed:
+                return
+            self._closed = True
+            attempt = self._init_attempt
+            discovery = self._discovery
+            pools = [*self._pools.values(), *self._retired_pools]
+            self._discovery = None
+            self._locator = ArcusLocator([])
+            self._pools = {}
+            self._retired_pools = set()
+            # Wake requests waiting for initialization.
+            self._condition.notify_all()
+
+        reason = ArcusError("client is closed")
+        for pool in pools:
+            pool.close(reason, abort_in_use=True)
+
+        # A late initialization stops its own discovery once it sees the close.
+        timeout = self._config.zk_timeout + 1
+        if attempt is not None and not attempt.finished.wait(timeout):
+            logger.warning(f"Initialization did not finish within {timeout}s")
+
+        # Outside the lock: a watch callback may be waiting for it.
+        if discovery is not None:
+            discovery.stop()
 
     def _default_discovery(self) -> Discovery:
         return ArcusDiscovery(

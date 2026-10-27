@@ -99,15 +99,20 @@ class SyncConnectionPool:
             connection.close()
 
     def close(self, reason: ArcusError, *, abort_in_use: bool) -> None:
-        """Fail waiters and later acquire() calls with ``reason``."""
+        """Fail waiters and later acquire() calls with ``reason``.
+
+        The first reason is kept, but a later call can still abort in-use
+        connections that an earlier call left running.
+        """
         with self._condition:
-            if self._close_reason is not None:
-                return
-            self._close_reason = reason
-            idle, self._idle = self._idle, []
-            self._size -= len(idle)
+            if self._close_reason is None:
+                self._close_reason = reason
+                idle, self._idle = self._idle, []
+                self._size -= len(idle)
+                self._condition.notify_all()
+            else:
+                idle = []
             in_use = list(self._in_use) if abort_in_use else []
-            self._condition.notify_all()
 
         for connection in idle:
             connection.close()

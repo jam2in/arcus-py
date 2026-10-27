@@ -346,3 +346,130 @@ def test_readded_node_gets_new_pool(
 
     # Then: A new connection is opened instead of failing on the closed pool.
     assert [call.args for call in connect.call_args_list] == [(NODE_B,), (NODE_B,)]
+
+
+def socket_connect(peers: list[socket.socket]) -> Callable[[str], SyncConnection]:
+    """Open real socket pairs whose peers stay silent unless the test writes."""
+
+    def open_connection(address: str) -> SyncConnection:
+        client, peer = socket.socketpair()
+        client.settimeout(5)
+        peers.append(peer)
+        return SyncConnection(address, client)
+
+    return open_connection
+
+
+def test_close_of_unused_cluster_starts_nothing(
+    connect: MockType,
+    make_cluster: MakeCluster,
+) -> None:
+    # Given: A cluster that never ran a request.
+    cluster, create_discovery = make_cluster(FakeDiscovery([NODE_A]))
+
+    # When: It is closed twice.
+    cluster.close()
+    cluster.close()
+
+    # Then: Nothing was started.
+    create_discovery.assert_not_called()
+    connect.assert_not_called()
+
+
+def test_close_stops_discovery_and_rejects_requests(
+    make_cluster: MakeCluster,
+    opened: list[SyncConnection],
+) -> None:
+    # Given: A cluster with an idle connection.
+    discovery = FakeDiscovery([NODE_A])
+    cluster, create_discovery = make_cluster(discovery)
+    cluster.execute(b"k", ping())
+
+    # When: The cluster is closed.
+    cluster.close()
+
+    # Then: Discovery stops, the idle connection is closed and requests fail.
+    assert discovery.stopped
+    assert opened[0].broken
+    with pytest.raises(ArcusError, match="client is closed"):
+        cluster.execute(b"k", ping())
+    create_discovery.assert_called_once_with()
+
+
+@pytest.mark.parametrize("node_removed", [False, True], ids=["active", "removed"])
+def test_close_aborts_in_flight_request(node_removed: bool) -> None:
+    # Given: A request waiting for a response that never comes.
+    peers: list[socket.socket] = []
+    discovery = FakeDiscovery([NODE_A, NODE_B])
+    cluster = SyncCluster(
+        CONFIG,
+        create_discovery=lambda: discovery,
+        connect=socket_connect(peers),
+    )
+    key = key_owned_by(NODE_B, [NODE_A, NODE_B])
+
+    try:
+        with ThreadPoolExecutor(1) as executor:
+            request = executor.submit(cluster.execute, key, ping())
+            while not peers:
+                time.sleep(0.01)
+            assert peers[0].recv(64) == b"ping\r\n"
+            if node_removed:
+                discovery.change([NODE_A])
+
+            # When: The cluster is closed.
+            cluster.close()
+
+            # Then: The request fails at once instead of waiting for the timeout.
+            with pytest.raises(ArcusError, match="client is closed") as exc_info:
+                request.result(timeout=1)
+        assert isinstance(exc_info.value.__cause__, ArcusConnectionError)
+    finally:
+        for peer in peers:
+            peer.close()
+
+
+def test_close_during_initialization_wakes_waiters_and_cleans_up(
+    make_cluster: MakeCluster,
+) -> None:
+    # Given: An initialization in progress and a request waiting for it.
+    discovery = FakeDiscovery([NODE_A], block=True)
+    cluster, _ = make_cluster(discovery)
+
+    with ThreadPoolExecutor(3) as executor:
+        first = executor.submit(cluster.execute, b"k", ping())
+        assert discovery.entered.wait(timeout=1)
+        second = executor.submit(cluster.execute, b"k", ping())
+        time.sleep(SETTLE)
+
+        # When: The cluster is closed.
+        closing = executor.submit(cluster.close)
+
+        # Then: The waiter fails at once, before the initialization finishes.
+        with pytest.raises(ArcusError, match="client is closed"):
+            second.result(timeout=1)
+
+        # And: The late initialization stops its own discovery.
+        discovery.proceed.set()
+        with pytest.raises(ArcusError, match="client is closed"):
+            first.result(timeout=1)
+        closing.result(timeout=1)
+    assert discovery.stopped
+
+
+def test_change_after_close_registers_nothing(
+    connect: MockType,
+    make_cluster: MakeCluster,
+) -> None:
+    # Given: A closed cluster.
+    discovery = FakeDiscovery([NODE_A])
+    cluster, _ = make_cluster(discovery)
+    cluster.execute(b"k", ping())
+    cluster.close()
+
+    # When: A late watch callback delivers a change.
+    discovery.change([NODE_A, NODE_B])
+
+    # Then: No pool is created again.
+    assert cluster._pools == {}
+    connect.assert_called_once_with(NODE_A)
