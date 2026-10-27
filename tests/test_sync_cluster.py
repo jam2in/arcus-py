@@ -1,4 +1,5 @@
 import socket
+import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -242,3 +243,106 @@ def test_broken_connection_is_replaced(
     assert result == b"PONG"
     assert connect.call_count == 2
     assert opened[0].broken
+
+
+def key_owned_by(node: str, nodes: list[str]) -> bytes:
+    locator = ArcusLocator(nodes)
+    return next(
+        key
+        for key in (f"key-{i}".encode() for i in range(1000))
+        if locator.get_node(key) == node
+    )
+
+
+def test_added_node_receives_its_keys(
+    connect: MockType,
+    make_cluster: MakeCluster,
+) -> None:
+    # Given: A cluster that started with one node.
+    discovery = FakeDiscovery([NODE_A])
+    cluster, _ = make_cluster(discovery)
+    key = key_owned_by(NODE_B, [NODE_A, NODE_B])
+    cluster.execute(key, ping())
+
+    # When: A second node is added.
+    discovery.change([NODE_A, NODE_B])
+    cluster.execute(key, ping())
+
+    # Then: The key moves to the node that now owns it.
+    assert [call.args for call in connect.call_args_list] == [(NODE_A,), (NODE_B,)]
+
+
+def test_removed_node_closes_idle_connections(
+    connect: MockType,
+    make_cluster: MakeCluster,
+    opened: list[SyncConnection],
+) -> None:
+    # Given: An idle connection to a node.
+    discovery = FakeDiscovery([NODE_A, NODE_B])
+    cluster, _ = make_cluster(discovery)
+    key = key_owned_by(NODE_B, [NODE_A, NODE_B])
+    cluster.execute(key, ping())
+
+    # When: The node is removed.
+    discovery.change([NODE_A])
+
+    # Then: Its idle connection is closed and the key moves to the remaining node.
+    assert opened[0].broken
+    cluster.execute(key, ping())
+    assert [call.args for call in connect.call_args_list] == [(NODE_B,), (NODE_A,)]
+
+
+def test_in_flight_request_on_removed_node_completes(
+    make_cluster: MakeCluster,
+    opened: list[SyncConnection],
+) -> None:
+    # Given: A request waiting for a response from a node.
+    discovery = FakeDiscovery([NODE_A, NODE_B])
+    cluster, _ = make_cluster(discovery)
+    key = key_owned_by(NODE_B, [NODE_A, NODE_B])
+    cluster.execute(key, ping())
+
+    receiving = threading.Event()
+    respond = threading.Event()
+
+    def slow_recv(_size: int) -> bytes:
+        receiving.set()
+        respond.wait()
+        return b"PONG\r\n"
+
+    sock = opened[0]._socket
+    assert isinstance(sock, Mock)
+    sock.recv.side_effect = slow_recv
+
+    with ThreadPoolExecutor(1) as executor:
+        request = executor.submit(cluster.execute, key, ping())
+        assert receiving.wait(timeout=1)
+
+        # When: The node is removed while the request is in flight.
+        discovery.change([NODE_A])
+        respond.set()
+
+        # Then: The request completes and its connection is closed afterwards.
+        assert request.result(timeout=1) == b"PONG"
+    assert opened[0].broken
+    # No removed pool is kept once its last request has finished.
+    assert cluster._retired_pools == set()
+
+
+def test_readded_node_gets_new_pool(
+    connect: MockType,
+    make_cluster: MakeCluster,
+) -> None:
+    # Given: A node that was used, then removed.
+    discovery = FakeDiscovery([NODE_A, NODE_B])
+    cluster, _ = make_cluster(discovery)
+    key = key_owned_by(NODE_B, [NODE_A, NODE_B])
+    cluster.execute(key, ping())
+    discovery.change([NODE_A])
+
+    # When: The node is added back.
+    discovery.change([NODE_A, NODE_B])
+    cluster.execute(key, ping())
+
+    # Then: A new connection is opened instead of failing on the closed pool.
+    assert [call.args for call in connect.call_args_list] == [(NODE_B,), (NODE_B,)]

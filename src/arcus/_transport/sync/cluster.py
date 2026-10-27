@@ -50,6 +50,7 @@ class SyncCluster:
 
         self._locator = ArcusLocator([])
         self._pools: dict[str, SyncConnectionPool] = {}
+        # Pools of removed nodes that still have requests in flight.
         self._retired_pools: set[SyncConnectionPool] = set()
 
     def execute(self, key: bytes, exchange: Exchange[T]) -> T:
@@ -66,6 +67,9 @@ class SyncCluster:
             return connection.execute(exchange)
         finally:
             pool.release(connection)
+            with self._condition:
+                if pool in self._retired_pools and pool.in_use == 0:
+                    self._retired_pools.discard(pool)
 
     def _default_discovery(self) -> Discovery:
         return ArcusDiscovery(
@@ -180,18 +184,15 @@ class SyncCluster:
                 attempt.latest_nodes = list(addresses)
                 return
 
-            removed = self._replace_nodes_locked(addresses)
-
-        for pool in removed:
-            pool.close(
-                ArcusConnectionError(f"Cache node removed: {pool.address}"),
-                abort_in_use=False,
-            )
-
-        with self._condition:
-            for pool in removed:
-                if pool.in_use == 0:
-                    self._retired_pools.discard(pool)
+            for pool in self._replace_nodes_locked(addresses):
+                # Closing under the lock leaves no window in which a removed
+                # pool lends a connection that nobody tracks.
+                pool.close(
+                    ArcusConnectionError(f"Cache node removed: {pool.address}"),
+                    abort_in_use=False,
+                )
+                if pool.in_use > 0:
+                    self._retired_pools.add(pool)
 
     def _replace_nodes_locked(
         self,
@@ -211,7 +212,6 @@ class SyncCluster:
             pool for address, pool in self._pools.items() if address not in pools
         ]
 
-        self._retired_pools.update(removed)
         self._locator = ArcusLocator(nodes)
         self._pools = pools
         return removed
