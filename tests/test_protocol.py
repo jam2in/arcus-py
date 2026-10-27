@@ -3,7 +3,13 @@ from support.drive import drive
 from support.response_cases import CASES, Case
 
 from arcus import ArcusConnectionError
-from arcus._command.kv import MAX_KEY_LENGTH, prepare_get, prepare_set
+from arcus._command.kv import (
+    MAX_EXPTIME,
+    MAX_KEY_LENGTH,
+    STICKY_EXPTIME,
+    prepare_get,
+    prepare_set,
+)
 from arcus._protocol.framing import read_data_block
 from arcus.transcoder import ArcusTranscoder
 
@@ -72,6 +78,45 @@ def test_none_value_is_rejected_before_iteration() -> None:
     # When / Then: Preparing the exchange fails before any byte is sent.
     with pytest.raises(TypeError):
         prepare_set("k", None, 0, T)
+
+
+@pytest.mark.parametrize(
+    ("exptime", "sent_exptime"),
+    [
+        pytest.param(STICKY_EXPTIME, b"-1", id="sticky"),
+        pytest.param(MAX_EXPTIME, b"2147483647", id="max"),
+    ],
+)
+def test_exptime_bounds_are_accepted(exptime: int, sent_exptime: bytes) -> None:
+    # Given: An exptime at either end of the range the server accepts.
+    exchange = prepare_set("k", "v", exptime, T)
+
+    # When: The exchange is driven.
+    _, sent = drive(exchange, b"STORED\r\n")
+
+    # Then: The exptime is sent unchanged.
+    assert sent == b"set k 0 " + sent_exptime + b' 3\r\n"v"\r\n'
+
+
+@pytest.mark.parametrize(
+    ("exptime", "error"),
+    [
+        pytest.param(True, TypeError, id="bool"),
+        pytest.param(1.5, TypeError, id="float"),
+        pytest.param("10", TypeError, id="str"),
+        pytest.param(STICKY_EXPTIME - 1, ValueError, id="below-sticky"),
+        pytest.param(MAX_EXPTIME + 1, ValueError, id="too-large"),
+    ],
+)
+def test_invalid_exptime_is_rejected_before_iteration(
+    exptime: object,
+    error: type[Exception],
+) -> None:
+    # Given: An exptime the server cannot accept.
+
+    # When / Then: Preparing the exchange fails before any byte is sent.
+    with pytest.raises(error, match="Exptime"):
+        prepare_set("k", "v", exptime, T)  # ty: ignore[invalid-argument-type] # invalid on purpose
 
 
 def test_data_block_may_contain_crlf() -> None:
