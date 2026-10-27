@@ -1,16 +1,24 @@
+import itertools
 import socket
 import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from pytest_mock import MockerFixture, MockType
+from support.response_cases import CASES, Case
 
 from arcus import ArcusConnectionError, ArcusOperationTimeoutError
+from arcus._command.kv import prepare_get
+from arcus._protocol.framing import MAX_LINE_LENGTH
+from arcus._protocol.request import Exchange, ReadLine
 from arcus._transport.sync.connection import SyncConnection
+from arcus.transcoder import ArcusTranscoder
 
 ADDRESS = "127.0.0.1:11211"
 CONNECTION_TIMEOUT = 1.0
 SOCKET_TIMEOUT = 0.5
+
+T = ArcusTranscoder()
 
 
 @pytest.fixture
@@ -340,3 +348,164 @@ def test_abort_wakes_blocked_recv() -> None:
         # Then: The receiver fails at once instead of waiting for the timeout.
         with pytest.raises(ArcusConnectionError):
             receiving.result(timeout=1)
+
+
+def read_line() -> Exchange[bytes]:
+    line = yield ReadLine()
+    return line
+
+
+def split(data: bytes, size: int | None) -> list[bytes]:
+    if size is None:
+        return [data]
+    return [data[i : i + size] for i in range(0, len(data), size)]
+
+
+@pytest.mark.parametrize("chunk_size", [1, 3, None], ids=["1", "3", "all"])
+@pytest.mark.parametrize("case", CASES, ids=lambda case: case.name)
+def test_execute_response_cases(
+    connection: SyncConnection,
+    sock: MockType,
+    case: Case,
+    chunk_size: int | None,
+) -> None:
+    # Given: The response arrives in chunks, followed by EOF.
+    sock.recv.side_effect = [*split(case.response, chunk_size), b""]
+
+    # When: The exchange is executed.
+    if case.error is None:
+        result = connection.execute(case.make())
+
+        # Then: The result is returned and the connection stays usable.
+        assert result == case.result
+        assert not connection.broken
+        sock.close.assert_not_called()
+    else:
+        with pytest.raises(case.error):
+            connection.execute(case.make())
+
+        # Then: The connection is discarded.
+        assert connection.broken
+        sock.close.assert_called()
+
+
+def test_execute_rejects_trailing_data(
+    connection: SyncConnection,
+    sock: MockType,
+) -> None:
+    # Given: A complete response is followed by bytes nobody asked for.
+    sock.recv.side_effect = [b'END\r\nVALUE k 0 3\r\n"v"\r\nEND\r\n']
+
+    # When: The exchange is executed.
+    with pytest.raises(ArcusConnectionError):
+        connection.execute(prepare_get("k", T))
+
+    # Then: The connection is discarded so the next request cannot read them.
+    assert connection.broken
+    sock.close.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        pytest.param([b"x" * MAX_LINE_LENGTH + b"\r\n"], id="one-chunk"),
+        pytest.param([b"x" * MAX_LINE_LENGTH + b"\r", b"\n"], id="split-crlf"),
+    ],
+)
+def test_execute_accepts_line_at_limit(
+    connection: SyncConnection,
+    sock: MockType,
+    chunks: list[bytes],
+) -> None:
+    # Given: A line of exactly the maximum length.
+    sock.recv.side_effect = chunks
+
+    # When: The line is read.
+    line = connection.execute(read_line())
+
+    # Then: The line is returned without its terminator.
+    assert line == b"x" * MAX_LINE_LENGTH
+    assert not connection.broken
+
+
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        pytest.param([b"x" * (MAX_LINE_LENGTH + 1) + b"\r\n"], id="terminated"),
+        pytest.param(itertools.repeat(b"x" * 4096), id="unterminated"),
+    ],
+)
+def test_execute_rejects_line_over_limit(
+    connection: SyncConnection,
+    sock: MockType,
+    chunks: list[bytes],
+) -> None:
+    # Given: A line longer than the maximum length.
+    sock.recv.side_effect = chunks
+
+    # When: The line is read.
+    with pytest.raises(ArcusConnectionError):
+        connection.execute(read_line())
+
+    # Then: Reading stops and the connection is discarded.
+    assert connection.broken
+    sock.close.assert_called_once_with()
+
+
+def test_execute_on_broken_connection_sends_nothing(
+    connection: SyncConnection,
+    sock: MockType,
+) -> None:
+    # Given: A connection that is already broken.
+    connection.broken = True
+
+    # When: An exchange is executed.
+    with pytest.raises(ArcusConnectionError):
+        connection.execute(prepare_get("k", T))
+
+    # Then: Nothing is sent.
+    sock.sendall.assert_not_called()
+
+
+def test_execute_failure_closes_exchange(
+    connection: SyncConnection,
+    sock: MockType,
+) -> None:
+    # Given: An exchange that records its cleanup, and a response that times out.
+    closed = False
+
+    def exchange() -> Exchange[bytes]:
+        nonlocal closed
+        try:
+            line = yield ReadLine()
+            return line
+        finally:
+            closed = True
+
+    sock.recv.side_effect = TimeoutError()
+
+    # When: The exchange is executed.
+    with pytest.raises(ArcusOperationTimeoutError):
+        connection.execute(exchange())
+
+    # Then: The exchange is closed and the connection is discarded.
+    assert closed
+    assert connection.broken
+
+
+def test_abort_wakes_blocked_execute() -> None:
+    # Given: A thread blocked waiting for a response from a silent peer.
+    client, peer = socket.socketpair()
+    client.settimeout(5)
+    connection = SyncConnection(ADDRESS, client)
+
+    with peer, ThreadPoolExecutor(1) as executor:
+        executing = executor.submit(connection.execute, prepare_get("k", T))
+        assert peer.recv(64) == b"get k\r\n"
+
+        # When: Another thread aborts the connection.
+        connection.abort()
+
+        # Then: The request fails at once instead of waiting for the timeout.
+        with pytest.raises(ArcusConnectionError):
+            executing.result(timeout=1)
