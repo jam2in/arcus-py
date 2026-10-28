@@ -6,7 +6,6 @@ from arcus._protocol.request import Exchange, ReadExactly
 from arcus.exceptions import ArcusConnectionError
 
 CRLF: Final[bytes] = b"\r\n"
-MAX_LINE_LENGTH: Final[int] = 65_536
 
 
 def read_data_block(size: int) -> Exchange[bytes]:
