@@ -2,6 +2,7 @@
 
 from importlib.metadata import version
 
+from .client import Arcus
 from .exceptions import (
     ArcusClientError,
     ArcusConnectionError,
@@ -15,6 +16,7 @@ from .exceptions import (
 __version__ = version("arcus-py")
 
 __all__ = [
+    "Arcus",
     "ArcusClientError",
     "ArcusConnectionError",
     "ArcusDecodeError",
