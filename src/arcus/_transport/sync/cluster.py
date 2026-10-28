@@ -1,4 +1,5 @@
 import copy
+import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from threading import Lock
@@ -54,12 +55,18 @@ class SyncCluster:
         self._config = config
         self._lock = Lock()
         self._closed = False
+        # Process that owns the discovery and connections below.
+        self._pid = os.getpid()
+        # Lets one thread of a forked child drop the parent's state.
+        self._fork_lock = Lock()
         self._discovery: ArcusDiscovery | None = None
         self._routing: _Routing | None = None
         self._init_error: Exception | None = None
 
     def execute(self, key: bytes, exchange: Exchange[T]) -> T:
         """Run the exchange on a connection to the node that owns the key."""
+        if self._is_forked():
+            self._reset_after_fork()
         routing = self._routing
         if routing is None:
             routing = self._wait_for_routing()
@@ -77,6 +84,14 @@ class SyncCluster:
 
     def close(self) -> None:
         """Reject new requests, abort running ones and stop discovery."""
+        if self._is_forked():
+            # The parent still uses these sockets and the ZooKeeper session,
+            # so drop them without shutdown or stop.
+            self._closed = True
+            self._discovery = None
+            self._routing = None
+            return
+
         # Waits for an initialization in progress, which holds the lock.
         with self._lock:
             if self._closed:
@@ -174,6 +189,32 @@ class SyncCluster:
             connection_timeout=self._config.connect_timeout,
             socket_timeout=self._config.socket_timeout,
         )
+
+    def _reset_after_fork(self) -> None:
+        """
+        Drop the parent's discovery and connections without closing them.
+
+        The parent still uses its ZooKeeper session and sockets, and a lock
+        held by a thread lost in fork never unlocks, so nothing here touches
+        the old state. The next request initializes the cluster again.
+        """
+        if not self._fork_lock.acquire(timeout=5):
+            raise ArcusError("Timed out resetting the client after fork")
+        try:
+            if not self._is_forked():
+                return
+            self._lock = Lock()
+            self._discovery = None
+            self._routing = None
+            self._init_error = None
+            # Last, so that other threads still wait for the lock until now.
+            self._pid = os.getpid()
+        finally:
+            self._fork_lock.release()
+
+    def _is_forked(self) -> bool:
+        """Read without the lock: a thread lost in fork may still hold it."""
+        return self._pid != os.getpid()
 
     def _raise_if_closed(self) -> None:
         """Check the cluster state while holding lock."""
