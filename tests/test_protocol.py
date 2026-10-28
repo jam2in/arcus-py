@@ -3,7 +3,14 @@ from support.drive import drive
 from support.response_cases import CASES, Case
 
 from arcus import ArcusConnectionError
-from arcus._command.kv import MAX_KEY_LENGTH, prepare_get, prepare_set
+from arcus._command.kv import (
+    MAX_EXPTIME,
+    MAX_KEY_LENGTH,
+    STICKY_EXPTIME,
+    encode_key,
+    prepare_get,
+    prepare_set,
+)
 from arcus._protocol.framing import read_data_block
 from arcus.transcoder import ArcusTranscoder
 
@@ -12,7 +19,7 @@ T = ArcusTranscoder()
 
 def test_get_request_bytes() -> None:
     # Given: A get exchange for a key.
-    exchange = prepare_get("k", T)
+    exchange = prepare_get(b"k", T)
 
     # When: The exchange is driven.
     _, sent = drive(exchange, b"END\r\n")
@@ -23,7 +30,7 @@ def test_get_request_bytes() -> None:
 
 def test_set_request_bytes() -> None:
     # Given: A set exchange with an expiration time.
-    exchange = prepare_set("k", "v", 10, T)
+    exchange = prepare_set(b"k", "v", 10, T)
 
     # When: The exchange is driven.
     _, sent = drive(exchange, b"STORED\r\n")
@@ -32,12 +39,20 @@ def test_set_request_bytes() -> None:
     assert sent == b'set k 0 10 3\r\n"v"\r\n'
 
 
+def test_key_is_encoded_as_utf8() -> None:
+    # Given / When: A non-ASCII key is encoded.
+    key = encode_key("가")
+
+    # Then: It becomes the UTF-8 bytes used for routing and the command line.
+    assert key == "가".encode()
+
+
 def test_max_length_key_is_accepted() -> None:
     # Given: A key of exactly the maximum length.
     key = "k" * MAX_KEY_LENGTH
 
-    # When: A get exchange is driven.
-    _, sent = drive(prepare_get(key, T), b"END\r\n")
+    # When: The key is encoded and a get exchange is driven.
+    _, sent = drive(prepare_get(encode_key(key), T), b"END\r\n")
 
     # Then: The full key is sent.
     assert sent == b"get " + key.encode() + b"\r\n"
@@ -55,15 +70,12 @@ def test_max_length_key_is_accepted() -> None:
         pytest.param("가" * 1334, ValueError, id="too-long"),
     ],
 )
-def test_invalid_key_is_rejected_before_iteration(
-    key: object,
-    error: type[Exception],
-) -> None:
+def test_invalid_key_is_rejected(key: object, error: type[Exception]) -> None:
     # Given: A key that cannot be sent on the protocol line.
 
-    # When / Then: Preparing the exchange fails before any byte is sent.
+    # When / Then: Encoding the key fails before any exchange is prepared.
     with pytest.raises(error):
-        prepare_get(key, T)  # ty: ignore[invalid-argument-type] # invalid on purpose
+        encode_key(key)  # ty: ignore[invalid-argument-type] # invalid on purpose
 
 
 def test_none_value_is_rejected_before_iteration() -> None:
@@ -71,7 +83,46 @@ def test_none_value_is_rejected_before_iteration() -> None:
 
     # When / Then: Preparing the exchange fails before any byte is sent.
     with pytest.raises(TypeError):
-        prepare_set("k", None, 0, T)
+        prepare_set(b"k", None, 0, T)
+
+
+@pytest.mark.parametrize(
+    ("exptime", "sent_exptime"),
+    [
+        pytest.param(STICKY_EXPTIME, b"-1", id="sticky"),
+        pytest.param(MAX_EXPTIME, b"9223372036854775807", id="max"),
+    ],
+)
+def test_exptime_bounds_are_accepted(exptime: int, sent_exptime: bytes) -> None:
+    # Given: An exptime at either end of the range the server accepts.
+    exchange = prepare_set(b"k", "v", exptime, T)
+
+    # When: The exchange is driven.
+    _, sent = drive(exchange, b"STORED\r\n")
+
+    # Then: The exptime is sent unchanged.
+    assert sent == b"set k 0 " + sent_exptime + b' 3\r\n"v"\r\n'
+
+
+@pytest.mark.parametrize(
+    ("exptime", "error"),
+    [
+        pytest.param(True, TypeError, id="bool"),
+        pytest.param(1.5, TypeError, id="float"),
+        pytest.param("10", TypeError, id="str"),
+        pytest.param(STICKY_EXPTIME - 1, ValueError, id="below-sticky"),
+        pytest.param(MAX_EXPTIME + 1, ValueError, id="too-large"),
+    ],
+)
+def test_invalid_exptime_is_rejected_before_iteration(
+    exptime: object,
+    error: type[Exception],
+) -> None:
+    # Given: An exptime the server cannot accept.
+
+    # When / Then: Preparing the exchange fails before any byte is sent.
+    with pytest.raises(error, match="Exptime"):
+        prepare_set(b"k", "v", exptime, T)  # ty: ignore[invalid-argument-type] # invalid on purpose
 
 
 def test_data_block_may_contain_crlf() -> None:
