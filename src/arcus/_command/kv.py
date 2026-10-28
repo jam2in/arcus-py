@@ -11,6 +11,11 @@ from arcus.transcoder import ArcusTranscoder
 
 MAX_KEY_LENGTH: Final = 4_000
 
+# The server takes a 4-byte signed exptime; -1 makes a sticky item that
+# neither expires nor gets evicted.
+STICKY_EXPTIME: Final = -1
+MAX_EXPTIME: Final = 2**63 - 1
+
 # Values carry no type information, so every item is stored with flags 0.
 _FLAGS: Final = 0
 
@@ -27,6 +32,17 @@ def encode_key(key: str) -> bytes:
         raise ValueError(f"Key contains invalid byte: {key_bytes!r}")
 
     return key_bytes
+
+
+def validate_exptime(exptime: int) -> int:
+    if isinstance(exptime, bool) or not isinstance(exptime, int):
+        raise TypeError(f"Exptime must be int, not {type(exptime).__name__}")
+    if not STICKY_EXPTIME <= exptime <= MAX_EXPTIME:
+        raise ValueError(
+            f"Exptime must be {STICKY_EXPTIME} to {MAX_EXPTIME}: {exptime}"
+        )
+
+    return exptime
 
 
 def _parse_value_line(line: bytes, key: bytes) -> int:
@@ -66,10 +82,10 @@ def _get(key: bytes, transcoder: ArcusTranscoder) -> Exchange[object | None]:
 
 
 def prepare_get(
-    key: str,
+    key: bytes,
     transcoder: ArcusTranscoder,
 ) -> Exchange[object | None]:
-    return _get(encode_key(key), transcoder)
+    return _get(key, transcoder)
 
 
 def _set(key: bytes, exptime: int, data: bytes) -> Exchange[bool]:
@@ -86,10 +102,11 @@ def _set(key: bytes, exptime: int, data: bytes) -> Exchange[bool]:
 
 
 def prepare_set(
-    key: str,
+    key: bytes,
     value: object,
     exptime: int,
     transcoder: ArcusTranscoder,
 ) -> Exchange[bool]:
-    key_bytes = encode_key(key)
-    return _set(key_bytes, exptime, transcoder.encode(value))
+    """Validate the exptime and encode the value before the exchange starts."""
+    exptime = validate_exptime(exptime)
+    return _set(key, exptime, transcoder.encode(value))

@@ -27,11 +27,11 @@ class Case:
 
 
 def _get() -> Exchange[object]:
-    return prepare_get("k", T)
+    return prepare_get(b"k", T)
 
 
 def _set() -> Exchange[object]:
-    return prepare_set("k", "v", 0, T)
+    return prepare_set(b"k", "v", 0, T)
 
 
 CASES: list[Case] = [
