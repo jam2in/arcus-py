@@ -1,0 +1,162 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: ko-KR
+tone_instructions: >-
+  Be concise and concrete. Cite the principle or file a comment relies on.
+  Skip praise and anything ruff or ty already enforce.
+
+reviews:
+  profile: chill
+  # PR descriptions follow the repo template; keep CodeRabbit's text in its own comment.
+  high_level_summary: false
+  poem: false
+  in_progress_fortune: false
+  suggested_labels: false
+  suggested_reviewers: false
+
+  auto_review:
+    enabled: true
+    drafts: false
+    # Work merges into develop, and stacked PRs target feature branches.
+    base_branches:
+      - develop
+      - feature/.*
+
+  path_filters:
+    - "!uv.lock"
+    - "!dist/**"
+
+  pre_merge_checks:
+    title:
+      mode: warning
+      requirements: >-
+        `PREFIX: Summary`. PREFIX is an uppercase category such as FEATURE or
+        INTERNAL. Summary is English, imperative, capitalized, with no
+        trailing period.
+    description:
+      mode: "off"
+    docstrings:
+      mode: "off"
+    issue_assessment:
+      mode: "off"
+
+  tools:
+    ruff:
+      enabled: true
+    # ruff (configured in pyproject.toml) already covers these.
+    flake8:
+      enabled: false
+    pylint:
+      enabled: false
+
+  path_instructions:
+    - path: "**/*.py"
+      instructions: |
+        Python 3.11+. ruff (lint + format) and ty run in CI, so do not comment
+        on formatting, import order, or annotation syntax.
+
+        Design
+        - Add an abstraction (Protocol, ABC, factory, injected callable) only
+          for a production need or a second real implementation. A parameter
+          or Protocol that exists only so tests can inject fakes is a defect;
+          tests patch dependencies instead.
+        - No compatibility shims for the old arcus-python-client. The
+          compatibility target is the Java client (arcus-java-client).
+        - Prefer composition and small functions. Use
+          @dataclass(frozen=True, slots=True) for value objects; never use
+          mutable default arguments.
+        - Options such as timeouts and sizes are keyword-only (`*`).
+        - Public names live in `arcus/__init__.py`; everything else is in
+          `_`-prefixed modules. Public exceptions keep the `Arcus` prefix.
+
+        Errors
+        - Signal failure by raising, not by returning None or a sentinel.
+        - Keep `try` blocks to the statements that can raise the handled
+          error, and catch the narrowest type. Do not wrap or convert an
+          exception unless the new type adds meaning for the caller; a
+          built-in error that already describes the problem may propagate.
+        - Catch BaseException only to clean up and re-raise.
+        - Validate public inputs at construction: TypeError for a wrong type
+          (reject bool where int is expected), ValueError for a wrong value.
+
+        Resources and concurrency
+        - Release sockets, pool connections, and locks with `with` or
+          try/finally on every path.
+        - Do not perform I/O, block, or call user or third-party callbacks
+          while holding a lock. Copy the needed state under the lock and act
+          outside it.
+        - Shared mutable state needs a documented lock; no module-level
+          mutable globals.
+
+        Style
+        - Comments explain why, not what.
+        - A docstring of two or more lines starts its summary on the line
+          after the opening quotes; a one-line docstring stays on one line.
+        - Logging uses `arcus._logging.logger`; never log cache values or
+          credentials.
+
+    - path: "src/arcus/_protocol/**/*.py"
+      instructions: |
+        This layer is I/O-free and shared by the sync and async clients.
+        An exchange is a generator that yields Write / ReadLine / ReadExactly
+        and receives bytes; it must never touch sockets, time, threads, or
+        asyncio.
+
+        Wire rules (command syntax, value ranges, response lines) must match
+        the Arcus server (arcus-memcached ascii protocol docs and source) and
+        the Java client. When a PR adds or changes a range or wire rule, ask
+        for the source it was checked against. Example: exptime is a signed
+        32-bit value where -1 means a sticky item.
+
+    - path: "src/arcus/_command/**/*.py"
+      instructions: |
+        Commands build I/O-free exchanges from encoded keys and values. Key
+        rules, flags, and the bytes stored for a value must stay compatible
+        with the Java client so both clients can share cached items. No
+        socket, thread, or event-loop code here.
+
+    - path: "src/arcus/_cluster/**/*.py"
+      instructions: |
+        Node routing must match the Java client exactly: Ketama with MD5,
+        160 points per node, and `bisect_left` on the ring. Cache nodes come
+        from `/arcus/cache_list/<service_code>` in ZooKeeper. Watch callbacks
+        run on a kazoo thread and take the cluster lock, so stopping
+        discovery while holding that lock can deadlock.
+
+    - path: "src/arcus/_transport/**/*.py"
+      instructions: |
+        Transport drives protocol exchanges over real sockets.
+        - Lazy initialization: constructing a client has no side effects (no
+          ZooKeeper session, no sockets). The first request starts discovery,
+          and pools open connections on demand up to the per-node limit.
+        - Fork safety: a process that inherits a used client detects the pid
+          change and initializes again. A forked child must never stop,
+          close, or shut down the parent's ZooKeeper session or sockets.
+        - A connection that raised mid-exchange is marked broken and never
+          returns to the pool.
+        - When a node leaves the cache list, its pool closes and in-flight
+          requests on it are aborted at once (as the Java client does).
+        - `close()` rejects new requests and aborts in-flight ones.
+
+    - path: "src/arcus/exceptions.py"
+      instructions: |
+        Exception meanings are part of the public contract:
+        - ArcusConnectionError: the request never reached a node or the
+          connection broke (TCP connect and ZooKeeper start timeouts belong
+          here too).
+        - ArcusOperationTimeoutError: the request was sent and its outcome is
+          unknown.
+        - ArcusPoolTimeoutError: no connection became free in time; it is a
+          capacity signal, not a node failure.
+        Flag any change that blurs these meanings or adds an exception
+        without a distinct caller action.
+
+    - path: "tests/**/*.py"
+      instructions: |
+        - Each test is structured with `# Given:`, `# When:`, `# Then:`
+          comments.
+        - Replace dependencies with `mocker.patch` / `mocker.patch.object` at
+          the import site; do not ask production code to accept fakes.
+        - A behavior change needs a test that fails on the old behavior.
+        - Concurrency tests wait with bounded timeouts and never rely on a
+          bare sleep for correctness; named settle constants explain why.
+        - Tests are annotated like production code.
