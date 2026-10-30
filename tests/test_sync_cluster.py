@@ -1,4 +1,6 @@
+import os
 import socket
+import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -467,3 +469,132 @@ def test_change_after_close_registers_nothing(
     # Then: No pool is created again.
     assert cluster._pools == {}
     assert [call.args for call in connect.call_args_list] == [(NODE_A,)]
+
+
+def simulate_fork(mocker: MockerFixture) -> None:
+    """Make os.getpid() report another process, as it does in a forked child."""
+    mocker.patch("os.getpid", return_value=os.getpid() + 1)
+
+
+def test_cluster_unused_before_fork_initializes_in_child(
+    mocker: MockerFixture,
+    connect: MockType,
+    make_cluster: MakeCluster,
+) -> None:
+    # Given: A cluster that was never used before fork.
+    cluster, create_discovery = make_cluster(FakeDiscovery([NODE_A]))
+    simulate_fork(mocker)
+
+    # When: The child runs a request.
+    result = cluster.execute(b"k", ping())
+
+    # Then: The child initializes the cluster for itself.
+    assert result == b"PONG"
+    create_discovery.assert_called_once()
+    assert [call.args for call in connect.call_args_list] == [(NODE_A,)]
+
+
+def test_cluster_used_before_fork_reinitializes_in_child(
+    mocker: MockerFixture,
+    connect: MockType,
+    opened: list[SyncConnection],
+    make_cluster: MakeCluster,
+) -> None:
+    # Given: A cluster used before fork, with its lock held by a thread
+    # that a real fork would not copy into the child.
+    parent_discovery = FakeDiscovery([NODE_A])
+    cluster, create_discovery = make_cluster(parent_discovery, FakeDiscovery([NODE_A]))
+    cluster.execute(b"k", ping())
+    parent_sock = opened[0]._socket
+    assert isinstance(parent_sock, Mock)
+
+    held = threading.Event()
+    release = threading.Event()
+    parent_condition = cluster._condition
+
+    def hold_lock() -> None:
+        with parent_condition:
+            held.set()
+            release.wait()
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    assert held.wait(timeout=1)
+    simulate_fork(mocker)
+
+    try:
+        # When: The child runs a request.
+        result = cluster.execute(b"k", ping())
+    finally:
+        release.set()
+        holder.join()
+
+    # Then: The child starts its own discovery and connection,
+    # and leaves the parent's alone.
+    assert result == b"PONG"
+    assert create_discovery.call_count == 2
+    assert [call.args for call in connect.call_args_list] == [(NODE_A,), (NODE_A,)]
+    parent_sock.shutdown.assert_not_called()
+    parent_sock.close.assert_not_called()
+    assert not parent_discovery.stopped
+
+
+def test_concurrent_requests_in_child_reset_once(
+    mocker: MockerFixture,
+    make_cluster: MakeCluster,
+) -> None:
+    # Given: A cluster used before fork.
+    cluster, create_discovery = make_cluster(
+        FakeDiscovery([NODE_A]), FakeDiscovery([NODE_A])
+    )
+    cluster.execute(b"k", ping())
+    simulate_fork(mocker)
+
+    # When: Several threads of the child run their first requests together.
+    with ThreadPoolExecutor(4) as executor:
+        results = list(executor.map(lambda _: cluster.execute(b"k", ping()), range(4)))
+
+    # Then: The child initializes only once.
+    assert results == [b"PONG"] * 4
+    assert create_discovery.call_count == 2
+
+
+def test_close_in_child_leaves_parent_resources(
+    mocker: MockerFixture,
+    opened: list[SyncConnection],
+    make_cluster: MakeCluster,
+) -> None:
+    # Given: A cluster used before fork, with its lock held by a thread
+    # that a real fork would not copy into the child.
+    discovery = FakeDiscovery([NODE_A])
+    cluster, _ = make_cluster(discovery)
+    cluster.execute(b"k", ping())
+    sock = opened[0]._socket
+    assert isinstance(sock, Mock)
+
+    held = threading.Event()
+    release = threading.Event()
+
+    def hold_lock() -> None:
+        with cluster._condition:
+            held.set()
+            release.wait()
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    assert held.wait(timeout=1)
+    simulate_fork(mocker)
+
+    try:
+        # When: The child closes the client.
+        cluster.close()
+    finally:
+        release.set()
+        holder.join()
+
+    # Then: It returns without the lock and leaves the parent's resources alone.
+    sock.shutdown.assert_not_called()
+    sock.close.assert_not_called()
+    assert not discovery.stopped
+    with pytest.raises(ArcusError, match="client is closed"):
+        cluster.execute(b"k", ping())
