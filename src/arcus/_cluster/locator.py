@@ -1,7 +1,6 @@
 from bisect import bisect_left
 from hashlib import md5
 from struct import Struct
-from threading import Lock
 
 from arcus.exceptions import ArcusConnectionError
 
@@ -26,43 +25,24 @@ def node_points(address: str) -> set[int]:
 
 
 class ArcusLocator:
+    """Ketama ring that never changes; build a new one for a new node list."""
+
     def __init__(self, addresses: list[str]) -> None:
-        self._lock = Lock()
-        self._ring: dict[int, set[str]] = {}
-        self._points: list[int] = []
-        self.update(set(addresses), set())
+        ring: dict[int, str] = {}
+        # Sorted, so a point shared by several nodes keeps the smallest address.
+        for address in sorted(set(addresses)):
+            for point in node_points(address):
+                ring.setdefault(point, address)
 
-    def update(self, to_attach: set[str], to_delete: set[str]) -> None:
-        with self._lock:
-            for address in to_attach:
-                self._insert_hash(address)
-            for address in to_delete:
-                self._remove_hash(address)
-
-            self._points = sorted(self._ring)
+        self._ring = ring
+        self._points = sorted(ring)
 
     def get_node(self, key: bytes) -> str:
-        point = key_hash(key)
+        if not self._points:
+            raise ArcusConnectionError("no cache nodes available")
 
-        with self._lock:
-            if not self._points:
-                raise ArcusConnectionError("no cache nodes available")
+        index = bisect_left(self._points, key_hash(key))
+        if index == len(self._points):
+            index = 0
 
-            index = bisect_left(self._points, point)
-            if index == len(self._points):
-                index = 0
-
-            return min(self._ring[self._points[index]])
-
-    def _insert_hash(self, address: str) -> None:
-        for point in node_points(address):
-            self._ring.setdefault(point, set()).add(address)
-
-    def _remove_hash(self, address: str) -> None:
-        """Nodes to delete must be currently registered in the ring."""
-        for point in set(node_points(address)):
-            nodes = self._ring[point]
-            nodes.remove(address)
-
-            if not nodes:
-                del self._ring[point]
+        return self._ring[self._points[index]]

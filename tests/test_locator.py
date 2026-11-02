@@ -75,35 +75,36 @@ def test_get_node(
     assert result == expected
 
 
-def test_update_adds_node(
+def test_added_node_takes_its_keys(
     locator: ArcusLocator,
     mocker: MockerFixture,
 ) -> None:
-    # Given: A key whose owner will change when node C is added.
+    # Given: A key between node B's point 100 and node C's point 150.
     mocker.patch("arcus._cluster.locator.key_hash", return_value=120)
+    assert locator.get_node(KEY) == NODE_B
 
-    # When: Node C is added to the existing locator.
-    locator.update(to_attach={NODE_C}, to_delete=set())
+    # When: A locator is built with node C added.
+    result = ArcusLocator([NODE_A, NODE_B, NODE_C]).get_node(KEY)
 
     # Then: The key is routed to the new node.
-    assert locator.get_node(KEY) == NODE_C
+    assert result == NODE_C
 
 
 @pytest.mark.parametrize("point", [100, 300])
-def test_update_removes_only_target_node(
+def test_removed_node_leaves_its_points(
     locator: ArcusLocator,
     mocker: MockerFixture,
     point: int,
 ) -> None:
     # Given: Node A shares point 100 with node B and exclusively owns point 300.
-    locator.update(to_attach={NODE_C}, to_delete=set())
     mocker.patch("arcus._cluster.locator.key_hash", return_value=point)
+    assert locator.get_node(KEY) == NODE_A
 
-    # When: Node A is removed.
-    locator.update(to_attach=set(), to_delete={NODE_A})
+    # When: A locator is built without node A.
+    result = ArcusLocator([NODE_B, NODE_C]).get_node(KEY)
 
     # Then: Node B keeps point 100, and the removed point 300 wraps to it.
-    assert locator.get_node(KEY) == NODE_B
+    assert result == NODE_B
 
 
 def test_empty_locator_raises() -> None:
@@ -114,34 +115,3 @@ def test_empty_locator_raises() -> None:
     # Then: The absence of cache nodes is reported.
     with pytest.raises(ArcusConnectionError, match="no cache nodes available"):
         locator.get_node(KEY)
-
-
-def test_update_removes_all_nodes(locator: ArcusLocator) -> None:
-    # Given: A locator containing nodes A and B.
-
-    # When: All nodes are removed.
-    locator.update(to_attach=set(), to_delete={NODE_A, NODE_B})
-
-    # Then: No stale routing entries remain.
-    with pytest.raises(ArcusConnectionError, match="no cache nodes available"):
-        locator.get_node(KEY)
-
-
-def test_update_removes_node_with_duplicate_hash_points() -> None:
-    # Given: A node has a duplicate point among its 160 raw hash points.
-    address = "127.0.7.1:12932"
-    assert len(node_points(address)) == 159
-
-    locator = ArcusLocator([NODE_A, NODE_B])
-    original_ring = {point: nodes.copy() for point, nodes in locator._ring.items()}
-    original_points = locator._points.copy()
-
-    locator.update(to_attach={address}, to_delete=set())
-    assert any(address in nodes for nodes in locator._ring.values())
-
-    # When: The node with duplicate hash points is removed.
-    locator.update(to_attach=set(), to_delete={address})
-
-    # Then: The original ring and sorted point index are restored.
-    assert locator._ring == original_ring
-    assert locator._points == original_points
