@@ -3,7 +3,7 @@ from collections.abc import Callable
 from kazoo.client import KazooClient
 from kazoo.exceptions import KazooException, NoNodeError, OperationTimeoutError
 from kazoo.handlers.threading import KazooTimeoutError
-from kazoo.protocol.states import WatchedEvent
+from kazoo.recipe.watchers import ChildrenWatch
 
 from arcus._logging import logger
 from arcus.exceptions import ArcusConnectionError
@@ -43,6 +43,9 @@ class ArcusDiscovery:
         self._timeout: float = timeout
         self._closed: bool = False
 
+        # Set by the first ChildrenWatch callback, which runs inside start().
+        self._initial_children: list[str] | None = None
+
         # Assigned in start() before registering the watch.
         self._on_change: Callable[[list[str]], None]
 
@@ -51,11 +54,12 @@ class ArcusDiscovery:
 
         try:
             self._client.start(timeout=self._timeout)
-            children = self._client.get_children(
-                path=self._path,
-                watch=self._watch_children,
-            )
-            return parse_cache_list(children)
+            ChildrenWatch(self._client, path=self._path, func=self._handle_children)
+
+            if self._initial_children is None:
+                raise NoNodeError
+
+            return parse_cache_list(self._initial_children)
         except BaseException as error:
             self._closed = True
             self._cleanup()
@@ -81,19 +85,22 @@ class ArcusDiscovery:
         self._closed = True
         self._cleanup()
 
-    def _watch_children(self, _event: WatchedEvent) -> None:
+    def _handle_children(self, children: list[str]) -> bool:
         if self._closed:
-            return
+            return False
+
+        # start() returns the first list. Calling on_change here would
+        # deadlock a caller that holds its own lock around start().
+        if self._initial_children is None:
+            self._initial_children = children
+            return True
 
         try:
-            children = self._client.get_children(
-                path=self._path,
-                watch=self._watch_children,
-            )
-
             self._on_change(parse_cache_list(children))
         except Exception:
             logger.exception("Failed to update cache nodes")
+
+        return True
 
     def _cleanup(self) -> None:
         try:
