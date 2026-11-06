@@ -38,28 +38,29 @@ class ArcusDiscovery:
         service_code: str,
         timeout: float = 10.0,
     ) -> None:
-        self._client: KazooClient = KazooClient(hosts=zk_hosts)
         self._path: str = f"/arcus/cache_list/{service_code}"
+        self._client: KazooClient = KazooClient(hosts=zk_hosts)
         self._timeout: float = timeout
         self._closed: bool = False
-
-        # Set by the first ChildrenWatch callback, which runs inside start().
-        self._initial_children: list[str] | None = None
 
         # Assigned in start() before registering the watch.
         self._on_change: Callable[[list[str]], None]
 
-    def start(self, on_change: Callable[[list[str]], None]) -> list[str]:
+    def start(self, on_change: Callable[[list[str]], None]) -> None:
+        """
+        Connect to ZooKeeper and pass each cache list to on_change.
+
+        The first list is passed in this thread before start() returns,
+        unless the service path is deleted meanwhile. Later lists come
+        from a kazoo thread, one call at a time.
+        """
         self._on_change = on_change
 
         try:
             self._client.start(timeout=self._timeout)
-            ChildrenWatch(self._client, path=self._path, func=self._handle_children)
-
-            if self._initial_children is None:
+            if self._client.exists(self._path) is None:
                 raise NoNodeError
-
-            return parse_cache_list(self._initial_children)
+            ChildrenWatch(self._client, path=self._path, func=self._handle_children)
         except BaseException as error:
             self._closed = True
             self._cleanup()
@@ -88,12 +89,6 @@ class ArcusDiscovery:
     def _handle_children(self, children: list[str]) -> bool:
         if self._closed:
             return False
-
-        # start() returns the first list. Calling on_change here would
-        # deadlock a caller that holds its own lock around start().
-        if self._initial_children is None:
-            self._initial_children = children
-            return True
 
         try:
             self._on_change(parse_cache_list(children))

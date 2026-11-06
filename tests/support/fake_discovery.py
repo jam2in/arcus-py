@@ -7,37 +7,31 @@ from collections.abc import Callable
 class FakeDiscovery:
     def __init__(
         self,
-        nodes: list[str],
+        nodes: list[str] | None,
         *,
         error: BaseException | None = None,
-        nodes_during_start: list[str] | None = None,
         block: bool = False,
     ) -> None:
+        # None delivers no list, as when the first list cannot be applied.
         self.nodes = nodes
         self.error = error
-        self.nodes_during_start = nodes_during_start
         self.entered = threading.Event()
         self.proceed = threading.Event()
         if not block:
             self.proceed.set()
         self.stopped = False
         self._on_change: Callable[[list[str]], None] | None = None
-        self._watch: threading.Thread | None = None
 
-    def start(self, on_change: Callable[[list[str]], None]) -> list[str]:
+    def start(self, on_change: Callable[[list[str]], None]) -> None:
         self._on_change = on_change
         self.entered.set()
         self.proceed.wait()
 
-        if self.nodes_during_start is not None:
-            # A real watch fires on the ZooKeeper event thread, not the caller's.
-            self._watch = threading.Thread(
-                target=on_change, args=(self.nodes_during_start,)
-            )
-            self._watch.start()
         if self.error is not None:
             raise self.error
-        return list(self.nodes)
+        # Like ChildrenWatch, deliver the first list before returning.
+        if self.nodes is not None:
+            on_change(list(self.nodes))
 
     def stop(self) -> None:
         self.stopped = True
@@ -46,9 +40,3 @@ class FakeDiscovery:
         """Deliver a node list change the way the ZooKeeper watch would."""
         assert self._on_change is not None
         self._on_change(nodes)
-
-    def join_watch(self) -> None:
-        """Wait until the change delivered during start() is applied."""
-        assert self._watch is not None
-        self._watch.join(timeout=1)
-        assert not self._watch.is_alive()

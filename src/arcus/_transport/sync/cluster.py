@@ -53,23 +53,30 @@ class SyncCluster:
 
     def __init__(self, config: ClientConfig) -> None:
         self._config = config
-        self._lock = Lock()
-        self._closed = False
-        # Process that owns the discovery and connections below.
+
+        # Process that owns the state below; see _reset_after_fork().
         self._pid = os.getpid()
-        # Lets one thread of a forked child drop the parent's state.
         self._fork_lock = Lock()
-        self._discovery: ArcusDiscovery | None = None
-        self._routing: _Routing | None = None
+
+        # Lets one thread initialize at a time; close() waits for it too.
+        self._init_lock = Lock()
         self._init_error: Exception | None = None
+        self._discovery: ArcusDiscovery | None = None
+
+        # Replaced as a whole by the watch; requests read it without a lock.
+        self._routing: _Routing | None = None
+        self._closed = False
 
     def execute(self, key: bytes, exchange: Exchange[T]) -> T:
         """Run the exchange on a connection to the node that owns the key."""
         if self._is_forked():
             self._reset_after_fork()
         routing = self._routing
+        # Checked after reading routing, so a routing that a late watch
+        # published after close() is never used.
+        self._raise_if_closed()
         if routing is None:
-            routing = self._wait_for_routing()
+            routing = self._initialize()
         pool = routing.pool_for(key)
 
         connection = pool.acquire()
@@ -92,8 +99,8 @@ class SyncCluster:
             self._routing = None
             return
 
-        # Waits for an initialization in progress, which holds the lock.
-        with self._lock:
+        # Waits for an initialization in progress.
+        with self._init_lock:
             if self._closed:
                 return
             self._closed = True
@@ -109,11 +116,12 @@ class SyncCluster:
         if discovery is not None:
             discovery.stop()
 
-    def _wait_for_routing(self) -> _Routing:
+    def _initialize(self) -> _Routing:
+        """Return the routing, starting discovery if no thread has yet."""
         # Read before waiting for the lock,
         # so a failure while waiting can be told apart.
         error_before_lock = self._init_error
-        with self._lock:
+        with self._init_lock:
             self._raise_if_closed()
             if self._routing is not None:
                 return self._routing
@@ -123,7 +131,7 @@ class SyncCluster:
                 raise copy.copy(failure) from failure
 
             try:
-                routing = self._initialize_locked()
+                routing = self._start_discovery_locked()
             except Exception as caught:
                 self._init_error = caught
                 raise
@@ -138,42 +146,47 @@ class SyncCluster:
         error = self._init_error
         return error if error is not error_before_lock else None
 
-    def _initialize_locked(self) -> _Routing:
-        """Start discovery and publish its nodes while holding lock."""
+    def _start_discovery_locked(self) -> _Routing:
+        """Start discovery and return the routing of its initial node list."""
         discovery = ArcusDiscovery(
             zk_hosts=self._config.zk_hosts,
             service_code=self._config.service_code,
             timeout=self._config.zk_timeout,
         )
-        # start() cleans up its own ZooKeeper client when it fails. A watch
-        # that fires meanwhile waits for the lock, so it applies after this.
-        nodes = discovery.start(self._on_nodes_changed)
-        routing = _Routing().with_nodes(nodes, self._create_pool)
+        # start() cleans up its own ZooKeeper client when it fails.
+        discovery.start(self._on_nodes_changed)
 
+        # The watch has passed the first list to _on_nodes_changed by now,
+        # unless the list could not be loaded.
+        routing = self._routing
+        if routing is None:
+            discovery.stop()
+            raise ArcusConnectionError(
+                f"Failed to load the cache list of {self._config.service_code}"
+            )
         self._discovery = discovery
-        self._routing = routing
         return routing
 
     def _on_nodes_changed(self, nodes: list[str]) -> None:
-        with self._lock:
-            # Ignore a late watch after close.
-            if self._closed:
-                return
-            removed = self._replace_nodes_locked(nodes)
+        """
+        Publish routing for the nodes and close the pools of removed nodes.
 
-        for pool in removed:
+        Only the ZooKeeper watch calls this, one call at a time.
+        """
+        if self._closed:
+            return
+
+        current = self._routing or _Routing()
+        routing = current.with_nodes(nodes, self._create_pool)
+        self._routing = routing
+
+        for pool in current.pools_missing_from(routing):
             # A node that left the cache list may not answer, so requests
             # still waiting on it fail at once instead of at their timeout.
             pool.close(
                 ArcusConnectionError(f"Cache node removed: {pool.address}"),
                 abort_in_use=True,
             )
-
-    def _replace_nodes_locked(self, nodes: list[str]) -> list[SyncConnectionPool]:
-        """Publish new routing while holding lock; return removed pools."""
-        current = self._routing or _Routing()
-        self._routing = current.with_nodes(nodes, self._create_pool)
-        return current.pools_missing_from(self._routing)
 
     def _create_pool(self, address: str) -> SyncConnectionPool:
         return SyncConnectionPool(
@@ -203,7 +216,7 @@ class SyncCluster:
         try:
             if not self._is_forked():
                 return
-            self._lock = Lock()
+            self._init_lock = Lock()
             self._discovery = None
             self._routing = None
             self._init_error = None
@@ -217,6 +230,6 @@ class SyncCluster:
         return self._pid != os.getpid()
 
     def _raise_if_closed(self) -> None:
-        """Check the cluster state while holding lock."""
+        """Raise if close() was called."""
         if self._closed:
             raise ArcusError("client is closed")
