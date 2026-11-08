@@ -4,7 +4,7 @@ import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 import pytest
 from pytest_mock import MockerFixture, MockType
@@ -12,6 +12,7 @@ from support.fake_discovery import FakeDiscovery
 
 from arcus import ArcusConnectionError, ArcusError
 from arcus._cluster.locator import ArcusLocator
+from arcus._cluster.routing import Routing
 from arcus._config import ClientConfig
 from arcus._protocol.request import Exchange, ReadLine, Write
 from arcus._transport.sync.cluster import SyncCluster
@@ -23,7 +24,7 @@ CONFIG = ClientConfig("127.0.0.1:2181", "test")
 # Long enough for a waiting thread to block before the main thread acts.
 SETTLE = 0.05
 
-MakeCluster = Callable[..., tuple[SyncCluster, MockType]]
+MakeCluster = Callable[..., tuple[SyncCluster, MagicMock]]
 
 
 def ping() -> Exchange[bytes]:
@@ -114,21 +115,22 @@ def test_empty_node_list_fails_requests_without_reinitializing(
     connect.assert_not_called()
 
 
-def test_change_during_start_is_applied_after_initial_list(
+def test_missing_cache_list_fails_and_stops_discovery(
     connect: MockType,
     make_cluster: MakeCluster,
 ) -> None:
-    # Given: The node list changes before start() returns the initial list.
-    discovery = FakeDiscovery([NODE_A], nodes_during_start=[NODE_B])
-    cluster, _ = make_cluster(discovery)
+    # Given: Discovery starts but delivers no cache list.
+    discovery = FakeDiscovery(None)
+    cluster, _ = make_cluster(discovery, FakeDiscovery([NODE_A]))
 
-    # When: Initialization finishes and the waiting change is applied.
-    cluster._wait_for_routing()
-    discovery.join_watch()
-    cluster.execute(b"k", ping())
+    # When / Then: The request fails and the discovery is stopped.
+    with pytest.raises(ArcusConnectionError, match="Failed to load the cache list"):
+        cluster.execute(b"k", ping())
+    assert discovery.stopped
+    connect.assert_not_called()
 
-    # Then: The newer list is used.
-    assert [call.args for call in connect.call_args_list] == [(NODE_B,)]
+    # And: The next request initializes again.
+    assert cluster.execute(b"k", ping()) == b"PONG"
 
 
 def test_concurrent_first_requests_share_initialization(
@@ -453,6 +455,22 @@ def test_change_after_close_registers_nothing(
     assert [call.args for call in connect.call_args_list] == [(NODE_A,)]
 
 
+def test_routing_published_after_close_is_not_used(
+    connect: MockType,
+    make_cluster: MakeCluster,
+) -> None:
+    # Given: A late watch published routing after the cluster was closed.
+    cluster, _ = make_cluster(FakeDiscovery([NODE_A]))
+    cluster.execute(b"k", ping())
+    cluster.close()
+    cluster._routing = Routing().with_nodes([NODE_B], cluster._create_pool)
+
+    # When / Then: Requests are rejected without connecting.
+    with pytest.raises(ArcusError, match="client is closed"):
+        cluster.execute(b"k", ping())
+    assert [call.args for call in connect.call_args_list] == [(NODE_A,)]
+
+
 def simulate_fork(mocker: MockerFixture) -> None:
     """Make os.getpid() report another process, as it does in a forked child."""
     mocker.patch("os.getpid", return_value=os.getpid() + 1)
@@ -492,7 +510,7 @@ def test_cluster_used_before_fork_reinitializes_in_child(
 
     held = threading.Event()
     release = threading.Event()
-    parent_lock = cluster._lock
+    parent_lock = cluster._init_lock
 
     def hold_lock() -> None:
         with parent_lock:
@@ -558,7 +576,7 @@ def test_close_in_child_leaves_parent_resources(
     release = threading.Event()
 
     def hold_lock() -> None:
-        with cluster._lock:
+        with cluster._init_lock:
             held.set()
             release.wait()
 
@@ -591,7 +609,7 @@ def test_cluster_unused_before_fork_ignores_lock_held_in_parent(
     cluster, create_discovery = make_cluster(FakeDiscovery([NODE_A]))
     held = threading.Event()
     release = threading.Event()
-    parent_lock = cluster._lock
+    parent_lock = cluster._init_lock
 
     def hold_lock() -> None:
         with parent_lock:

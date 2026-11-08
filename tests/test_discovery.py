@@ -3,7 +3,7 @@ from collections.abc import Callable
 from typing import Any
 
 import pytest
-from kazoo.exceptions import ConnectionLoss, NoNodeError, OperationTimeoutError
+from kazoo.exceptions import ConnectionLoss, OperationTimeoutError
 from kazoo.handlers.threading import KazooTimeoutError
 from kazoo.protocol.states import EventType, KazooState, WatchedEvent
 from kazoo.retry import KazooRetry
@@ -63,7 +63,7 @@ def on_change(mocker: MockerFixture) -> MockType:
     return mocker.Mock()
 
 
-def test_start_returns_cache_nodes(
+def test_start_notifies_initial_cache_nodes(
     mocker: MockerFixture,
     zk_client: MockType,
     on_change: MockType,
@@ -73,16 +73,17 @@ def test_start_returns_cache_nodes(
 
     try:
         # When: Discovery starts.
-        addresses = discovery.start(on_change)
+        discovery.start(on_change)
 
-        # Then: It returns sorted addresses without notifying the consumer.
-        assert addresses == EXPECTED_ADDRESSES
+        # Then: It notifies the consumer of the sorted addresses
+        # before returning.
+        on_change.assert_called_once_with(EXPECTED_ADDRESSES)
+        zk_client.exists.assert_called_once_with(SERVICE_PATH)
         zk_client.get_children.assert_called_once_with(
             SERVICE_PATH,
             mocker.ANY,
         )
         zk_client.add_listener.assert_called_once()
-        on_change.assert_not_called()
     finally:
         discovery.stop()
 
@@ -112,6 +113,7 @@ def test_watch_notifies_changes_and_registers_again(
 
     try:
         discovery.start(on_change)
+        on_change.reset_mock()
         watch = _child_watch(zk_client)
         zk_client.get_children.return_value = children
 
@@ -143,6 +145,7 @@ def test_reconnect_reads_nodes_changed_while_disconnected(
 
     try:
         discovery.start(on_change)
+        on_change.reset_mock()
         watch = _child_watch(zk_client)
         listener = _state_listener(zk_client)
 
@@ -177,6 +180,7 @@ def test_watch_retries_lookup_and_keeps_watching(
 
     try:
         discovery.start(on_change)
+        on_change.reset_mock()
         watch = _child_watch(zk_client)
         zk_client.retry.side_effect = KazooRetry(max_tries=None, delay=0)
         zk_client.get_children.side_effect = [
@@ -214,7 +218,8 @@ def test_watch_applies_next_change_after_callback_failure(
 
     try:
         # Given: Applying the next cache list will fail.
-        applied_nodes = discovery.start(on_change)
+        discovery.start(on_change)
+        on_change.reset_mock()
         watch = _child_watch(zk_client)
         zk_client.get_children.return_value = ["127.0.0.1:11214-cache4"]
         on_change.side_effect = RuntimeError("Failed to apply cache nodes")
@@ -222,22 +227,18 @@ def test_watch_applies_next_change_after_callback_failure(
         # When: ZooKeeper delivers the change and the consumer raises.
         watch(CHILD_EVENT)
 
-        # Then: The old list remains, but another watch is already registered.
-        assert applied_nodes == EXPECTED_ADDRESSES
+        # Then: Another watch is already registered.
         on_change.assert_called_once_with(["127.0.0.1:11214"])
         assert zk_client.get_children.call_count == 2
         zk_client.get_children.assert_called_with(SERVICE_PATH, watch)
 
-        def apply_nodes(nodes: list[str]) -> None:
-            applied_nodes[:] = nodes
-
         # When: The consumer recovers and a subsequent change arrives.
-        on_change.side_effect = apply_nodes
+        on_change.side_effect = None
         zk_client.get_children.return_value = ["127.0.0.1:11215-cache5"]
         _child_watch(zk_client)(CHILD_EVENT)
 
         # Then: The new list is applied and watching continues.
-        assert applied_nodes == ["127.0.0.1:11215"]
+        on_change.assert_called_with(["127.0.0.1:11215"])
         assert on_change.call_count == 2
         assert zk_client.get_children.call_count == 3
         zk_client.get_children.assert_called_with(SERVICE_PATH, watch)
@@ -250,7 +251,7 @@ def test_watch_applies_next_change_after_callback_failure(
     [
         pytest.param("connect", ConnectionLoss(), id="connection-failure"),
         pytest.param("connect", KazooTimeoutError(), id="connection-timeout"),
-        pytest.param("lookup", NoNodeError(), id="service-not-found"),
+        pytest.param("exists", None, id="service-not-found"),
         pytest.param("lookup", OperationTimeoutError(), id="lookup-timeout"),
     ],
 )
@@ -258,13 +259,15 @@ def test_start_failure_cleans_up(
     zk_client: MockType,
     on_change: MockType,
     stage: str,
-    error: Exception,
+    error: Exception | None,
 ) -> None:
     # Given: Connecting to ZooKeeper or reading the node list will fail.
     discovery = ArcusDiscovery(ZK_HOSTS, SERVICE_CODE)
 
     if stage == "connect":
         zk_client.start.side_effect = error
+    elif stage == "exists":
+        zk_client.exists.return_value = None
     else:
         zk_client.get_children.side_effect = error
 
@@ -285,6 +288,7 @@ def test_stop_closes_connection_and_ignores_watch(
     # Given: Discovery is watching the service.
     discovery = ArcusDiscovery(ZK_HOSTS, SERVICE_CODE)
     discovery.start(on_change)
+    on_change.reset_mock()
     watch = _child_watch(zk_client)
 
     # When: Discovery is stopped and a late event arrives.
