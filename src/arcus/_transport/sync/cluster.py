@@ -1,12 +1,10 @@
 import copy
 import os
-from collections.abc import Callable
-from dataclasses import dataclass, field
 from threading import Lock
 from typing import TypeVar
 
 from arcus._cluster.discovery import ArcusDiscovery
-from arcus._cluster.locator import ArcusLocator
+from arcus._cluster.routing import Routing
 from arcus._config import ClientConfig
 from arcus._protocol.request import Exchange
 from arcus._transport.sync.connection import SyncConnection
@@ -18,34 +16,6 @@ from arcus.exceptions import (
 )
 
 T = TypeVar("T")
-
-
-@dataclass(frozen=True, slots=True)
-class _Routing:
-    """Which pool serves each key; replaced as a whole when the nodes change."""
-
-    locator: ArcusLocator = field(default_factory=lambda: ArcusLocator([]))
-    pools: dict[str, SyncConnectionPool] = field(default_factory=dict)
-
-    def with_nodes(
-        self,
-        nodes: list[str],
-        create_pool: Callable[[str], SyncConnectionPool],
-    ) -> "_Routing":
-        """Return the routing for the nodes; a node that stays keeps its pool."""
-        pools: dict[str, SyncConnectionPool] = {}
-        for address in sorted(set(nodes)):
-            pools[address] = self.pools.get(address) or create_pool(address)
-        return _Routing(ArcusLocator(list(pools)), pools)
-
-    def pools_missing_from(self, other: "_Routing") -> list[SyncConnectionPool]:
-        """Return the pools of nodes that other no longer has."""
-        return [
-            pool for address, pool in self.pools.items() if address not in other.pools
-        ]
-
-    def pool_for(self, key: bytes) -> SyncConnectionPool:
-        return self.pools[self.locator.get_node(key)]
 
 
 class SyncCluster:
@@ -64,7 +34,7 @@ class SyncCluster:
         self._discovery: ArcusDiscovery | None = None
 
         # Replaced as a whole by the watch; requests read it without a lock.
-        self._routing: _Routing | None = None
+        self._routing: Routing[SyncConnectionPool] | None = None
         self._closed = False
 
     def execute(self, key: bytes, exchange: Exchange[T]) -> T:
@@ -116,7 +86,7 @@ class SyncCluster:
         if discovery is not None:
             discovery.stop()
 
-    def _initialize(self) -> _Routing:
+    def _initialize(self) -> Routing[SyncConnectionPool]:
         """Return the routing, starting discovery if no thread has yet."""
         # Read before waiting for the lock,
         # so a failure while waiting can be told apart.
@@ -146,7 +116,7 @@ class SyncCluster:
         error = self._init_error
         return error if error is not error_before_lock else None
 
-    def _start_discovery_locked(self) -> _Routing:
+    def _start_discovery_locked(self) -> Routing[SyncConnectionPool]:
         """Start discovery and return the routing of its initial node list."""
         discovery = ArcusDiscovery(
             zk_hosts=self._config.zk_hosts,
@@ -176,7 +146,7 @@ class SyncCluster:
         if self._closed:
             return
 
-        current = self._routing or _Routing()
+        current = self._routing or Routing()
         routing = current.with_nodes(nodes, self._create_pool)
         self._routing = routing
 
