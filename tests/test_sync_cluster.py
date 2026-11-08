@@ -4,7 +4,7 @@ import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 import pytest
 from pytest_mock import MockerFixture, MockType
@@ -12,9 +12,10 @@ from support.fake_discovery import FakeDiscovery
 
 from arcus import ArcusConnectionError, ArcusError
 from arcus._cluster.locator import ArcusLocator
+from arcus._cluster.routing import Routing
 from arcus._config import ClientConfig
 from arcus._protocol.request import Exchange, ReadLine, Write
-from arcus._transport.sync.cluster import SyncCluster, _Routing
+from arcus._transport.sync.cluster import SyncCluster
 from arcus._transport.sync.connection import SyncConnection
 
 NODE_A = "127.0.0.1:11211"
@@ -23,7 +24,7 @@ CONFIG = ClientConfig("127.0.0.1:2181", "test")
 # Long enough for a waiting thread to block before the main thread acts.
 SETTLE = 0.05
 
-MakeCluster = Callable[..., tuple[SyncCluster, MockType]]
+MakeCluster = Callable[..., tuple[SyncCluster, MagicMock]]
 
 
 def ping() -> Exchange[bytes]:
@@ -462,7 +463,7 @@ def test_routing_published_after_close_is_not_used(
     cluster, _ = make_cluster(FakeDiscovery([NODE_A]))
     cluster.execute(b"k", ping())
     cluster.close()
-    cluster._routing = _Routing().with_nodes([NODE_B], cluster._create_pool)
+    cluster._routing = Routing().with_nodes([NODE_B], cluster._create_pool)
 
     # When / Then: Requests are rejected without connecting.
     with pytest.raises(ArcusError, match="client is closed"):
