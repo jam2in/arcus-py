@@ -1,8 +1,9 @@
-"""Python Driver for Cache"""
+"""Python Driver for Arcus cache"""
 
 from importlib.metadata import version
 
 from ._command.vector import Metric, Quant, VectorOptions
+from .aio import AsyncArcus
 from .client import Arcus
 from .exceptions import (
     ArcusClientError,
@@ -25,6 +26,7 @@ __all__ = [
     "ArcusOperationTimeoutError",
     "ArcusPoolTimeoutError",
     "ArcusServerError",
+    "AsyncArcus",
     "Metric",
     "Quant",
     "VectorOptions",
