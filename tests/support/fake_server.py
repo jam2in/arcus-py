@@ -83,3 +83,21 @@ class FakeServer:
                     wfile.write(b"STORED\r\n")
                 else:
                     wfile.write(b"NOT_FOUND\r\n")
+            elif command == b"vop" and key == b"search":
+                # Every element scores 0; only the framing matters to the client.
+                index, source, value, k, *options = fields
+                if source == b"vector":
+                    rfile.read(int(value) + 2)
+                if b"filter" in options:
+                    rfile.read(int(options[options.index(b"filter") + 1]) + 2)
+                if index not in self.vectors:
+                    wfile.write(b"NOT_FOUND\r\n")
+                    continue
+                found = list(self.vectors[index].items())[: int(k)]
+                wfile.write(b"VECTORS %d\r\n" % len(found))
+                for vkey, meta in found:
+                    if b"withmeta" in options:
+                        wfile.write(b"%s 0 %d\r\n%s\r\n" % (vkey, len(meta), meta))
+                    else:
+                        wfile.write(b"%s 0\r\n" % vkey)
+                wfile.write(b"END\r\n")

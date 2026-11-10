@@ -113,6 +113,29 @@ def test_vop_upsert_through_the_client_and_the_handle(
     assert missing is False
 
 
+def test_vop_search_by_vector_and_by_vkey(
+    server: FakeServer,
+    discovery_class: MockType,
+) -> None:
+    # Given: A client with a vector index holding one element with metadata.
+    serve(discovery_class, server)
+
+    with Arcus(ZK_HOSTS, SERVICE_CODE) as client:
+        vector = client.vop_create("idx", VectorOptions(dim=3))
+        assert vector is not None
+        vector.upsert("a", [1.0, 2.0, 3.0], meta={"n": 1})
+
+        # When: The index is searched by a vector, by a vkey, and on a missing index.
+        by_vector = client.vop_search("idx", [1.0, 2.0, 3.0], 5, filter="n = 1")
+        by_vkey = vector.search("a", 5, with_meta=True)
+        missing = client.vop_search("nope", "a", 5)
+
+    # Then: Both searches find the element, with its metadata when asked for.
+    assert by_vector == [("a", 0.0, None)]
+    assert by_vkey == [("a", 0.0, {"n": 1})]
+    assert missing is None
+
+
 def test_key_is_stored_on_its_owner_node(discovery_class: MockType) -> None:
     key = "가".encode()
 

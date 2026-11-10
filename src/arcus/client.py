@@ -6,9 +6,11 @@ from typing import Any, Final, Self
 
 from arcus._command.kv import prepare_get, prepare_set
 from arcus._command.vector import (
+    SearchResult,
     Vector,
     VectorOptions,
     prepare_vop_create,
+    prepare_vop_search,
     prepare_vop_upsert,
 )
 from arcus._config import (
@@ -97,6 +99,20 @@ class Arcus:
         """Store the vector under the key; False if the index is missing or full."""
         index_bytes = _encode_key(index)
         exchange = prepare_vop_upsert(index_bytes, vkey, vector, meta)
+        return self._cluster.execute(index_bytes, exchange)
+
+    def vop_search(
+        self,
+        index: str,
+        query: Sequence[float] | bytes | str,
+        count: int,
+        *,
+        filter: str | None = None,
+        with_meta: bool = False,
+    ) -> list[SearchResult] | None:
+        """Return the count nearest elements; None if the index or vkey is missing."""
+        index_bytes = _encode_key(index)
+        exchange = prepare_vop_search(index_bytes, query, count, filter, with_meta)
         return self._cluster.execute(index_bytes, exchange)
 
     def close(self) -> None:

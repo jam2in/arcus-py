@@ -14,6 +14,7 @@ from arcus._command.kv import prepare_get, prepare_set
 from arcus._command.vector import (
     VectorOptions,
     prepare_vop_create,
+    prepare_vop_search,
     prepare_vop_upsert,
 )
 from arcus._protocol.request import Exchange
@@ -45,6 +46,14 @@ def _vop_create() -> Exchange[object]:
 
 def _vop_upsert() -> Exchange[object]:
     return prepare_vop_upsert(b"k", "v", [1.0], None)
+
+
+def _vop_search() -> Exchange[object]:
+    return prepare_vop_search(b"k", "v", 2, None, False)
+
+
+def _vop_search_with_meta() -> Exchange[object]:
+    return prepare_vop_search(b"k", "v", 2, None, True)
 
 
 CASES: list[Case] = [
@@ -117,6 +126,52 @@ CASES: list[Case] = [
     Case(
         "vop_upsert_bad_value",
         _vop_upsert,
+        b"CLIENT_ERROR bad value\r\n",
+        error=ArcusClientError,
+    ),
+    Case(
+        "vop_search_results",
+        _vop_search,
+        b"VECTORS 2\r\na 0.5\r\nb 1.5e-5\r\nEND\r\n",
+        result=[("a", 0.5, None), ("b", 1.5e-5, None)],
+    ),
+    Case("vop_search_empty", _vop_search, b"VECTORS 0\r\nEND\r\n", result=[]),
+    Case(
+        "vop_search_with_meta",
+        _vop_search_with_meta,
+        b'VECTORS 1\r\na 0.5 11\r\n{"n":"\xea\xb0\x80"}\r\nEND\r\n',
+        result=[("a", 0.5, {"n": "가"})],
+    ),
+    Case("vop_search_not_found", _vop_search, b"NOT_FOUND\r\n"),
+    Case("vop_search_no_element", _vop_search, b"NOT_FOUND_ELEMENT\r\n"),
+    Case("vop_search_type_mismatch", _vop_search, b"TYPE_MISMATCH\r\n"),
+    Case(
+        "vop_search_bad_count",
+        _vop_search,
+        b"VECTORS x\r\nEND\r\n",
+        error=ArcusConnectionError,
+    ),
+    Case(
+        "vop_search_bad_line",
+        _vop_search,
+        b"VECTORS 1\r\na\r\nEND\r\n",
+        error=ArcusConnectionError,
+    ),
+    Case(
+        "vop_search_missing_end",
+        _vop_search,
+        b"VECTORS 1\r\na 0.5\r\nSTORED\r\n",
+        error=ArcusConnectionError,
+    ),
+    Case(
+        "vop_search_bad_meta",
+        _vop_search_with_meta,
+        b"VECTORS 1\r\na 0.5 3\r\nnot\r\nEND\r\n",
+        error=ArcusDecodeError,
+    ),
+    Case(
+        "vop_search_bad_filter",
+        _vop_search,
         b"CLIENT_ERROR bad value\r\n",
         error=ArcusClientError,
     ),

@@ -5,11 +5,18 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Final
 
-from arcus._command.vector._transcoder import encode_meta, encode_vector, encode_vkey
-from arcus._protocol.framing import CRLF
+from arcus._command.vector._transcoder import (
+    decode_meta,
+    encode_filter,
+    encode_meta,
+    encode_vector,
+    encode_vkey,
+)
+from arcus._protocol.framing import CRLF, read_data_block
 from arcus._protocol.request import Exchange, ReadLine, Write
 from arcus._protocol.status import raise_unexpected
 from arcus._validation import validate_exptime, validate_int
+from arcus.exceptions import ArcusConnectionError
 
 if TYPE_CHECKING:
     from arcus.client import Arcus
@@ -18,6 +25,7 @@ DIM_RANGE: Final = range(1, 65_536)
 M_RANGE: Final = range(2, 1025)
 EF_RANGE: Final = range(1, 65_536)
 MAX_COUNT_RANGE: Final = range(2**31)
+COUNT_RANGE: Final = range(1, 2**31)
 DEFAULT_EF_CONSTRUCTION: Final = 128
 DEFAULT_EF_SEARCH: Final = 64
 
@@ -142,6 +150,116 @@ def prepare_vop_upsert(
     return _upsert(index, key_bytes, vector_bytes, meta_bytes)
 
 
+SearchResult = tuple[str, float, dict[str, Any] | None]
+
+
+def _search_options(filter: bytes, with_meta: bool) -> bytes:
+    options = b""
+    if filter:
+        options += b" filter %d" % len(filter)
+    if with_meta:
+        options += b" withmeta"
+    return options
+
+
+def _search_by_vkey(
+    index: bytes,
+    vkey: bytes,
+    count: int,
+    filter: bytes,
+    with_meta: bool,
+) -> Exchange[list[SearchResult] | None]:
+    header = b"vop search %s vkey %s %d" % (index, vkey, count)
+    header += _search_options(filter, with_meta)
+    request = header + CRLF
+    if filter:
+        request += filter + CRLF
+    return _search(request, with_meta)
+
+
+def _search_by_vector(
+    index: bytes,
+    vector: bytes,
+    count: int,
+    filter: bytes,
+    with_meta: bool,
+) -> Exchange[list[SearchResult] | None]:
+    header = b"vop search %s vector %d %d" % (index, len(vector), count)
+    header += _search_options(filter, with_meta)
+    request = header + CRLF + vector + CRLF
+    if filter:
+        request += filter + CRLF
+    return _search(request, with_meta)
+
+
+def _parse_vectors_line(line: bytes) -> int:
+    """Parse ``VECTORS <count>`` and return the count."""
+    fields = line.split(b" ")
+    if len(fields) != 2 or not fields[1].isdigit():
+        raise ArcusConnectionError(f"Invalid VECTORS line: {line!r}")
+    return int(fields[1])
+
+
+def _parse_result_line(line: bytes, with_meta: bool) -> tuple[str, float, int]:
+    """Parse ``<vkey> <score> [<meta bytes>]`` into the vkey, score and meta size."""
+    fields = line.split(b" ")
+    try:
+        if with_meta:
+            key, score, size = fields
+            return key.decode(), float(score), int(size)
+        else:
+            key, score = fields
+            return key.decode(), float(score), 0
+    except ValueError as error:
+        raise ArcusConnectionError(f"Invalid search result line: {line!r}") from error
+
+
+def _search(request: bytes, with_meta: bool) -> Exchange[list[SearchResult] | None]:
+    yield Write(request)
+
+    line = yield ReadLine()
+    if line in (b"NOT_FOUND", b"NOT_FOUND_ELEMENT", b"TYPE_MISMATCH"):
+        return None
+    if not line.startswith(b"VECTORS "):
+        raise_unexpected(line)
+
+    count = _parse_vectors_line(line)
+    rows: list[tuple[str, float, bytes | None]] = []
+    for _ in range(count):
+        line = yield ReadLine()
+        vkey, score, size = _parse_result_line(line, with_meta)
+        if with_meta:
+            data = yield from read_data_block(size)
+            rows.append((vkey, score, data))
+        else:
+            rows.append((vkey, score, None))
+
+    line = yield ReadLine()
+    if line != b"END":
+        raise_unexpected(line)
+
+    return [(vkey, score, decode_meta(vkey, data)) for vkey, score, data in rows]
+
+
+def prepare_vop_search(
+    index: bytes,
+    query: Sequence[float] | bytes | str,
+    count: int,
+    filter: str | None,
+    with_meta: bool,
+) -> Exchange[list[SearchResult] | None]:
+    """Validate and encode the search before the exchange starts."""
+    validate_int("Count", count, COUNT_RANGE)
+    filter_bytes = encode_filter(filter)
+
+    if isinstance(query, str):
+        vkey_bytes = encode_vkey(query)
+        return _search_by_vkey(index, vkey_bytes, count, filter_bytes, with_meta)
+    else:
+        vector_bytes = encode_vector(query)
+        return _search_by_vector(index, vector_bytes, count, filter_bytes, with_meta)
+
+
 class Vector:
     """A handle on one vector index; get it from ``Arcus.vop_create``."""
 
@@ -163,6 +281,18 @@ class Vector:
         meta: dict[str, Any] | None = None,
     ) -> bool:
         return self._client.vop_upsert(self._name, vkey, vector, meta=meta)
+
+    def search(
+        self,
+        query: Sequence[float] | bytes | str,
+        count: int,
+        *,
+        filter: str | None = None,
+        with_meta: bool = False,
+    ) -> list[SearchResult] | None:
+        return self._client.vop_search(
+            self._name, query, count, filter=filter, with_meta=with_meta
+        )
 
     def __repr__(self) -> str:
         return f"Vector({self._name!r})"
