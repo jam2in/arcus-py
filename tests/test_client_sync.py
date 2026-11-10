@@ -72,6 +72,69 @@ def test_set_then_get(server: FakeServer, discovery_class: MockType) -> None:
     assert server.connections == 1
 
 
+def test_vop_create_returns_a_handle_once(
+    server: FakeServer,
+    discovery_class: MockType,
+) -> None:
+    # Given: A client for a service with one cache node.
+    serve(discovery_class, server)
+
+    with Arcus(ZK_HOSTS, SERVICE_CODE) as client:
+        # When: The same vector index is created twice.
+        created = client.vop_create("idx", 3)
+        again = client.vop_create("idx", 3)
+
+    # Then: Only the first create returns a handle on the index.
+    assert created is not None
+    assert created.name == "idx"
+    assert again is None
+
+
+def test_vop_upsert_through_the_client_and_the_handle(
+    server: FakeServer,
+    discovery_class: MockType,
+) -> None:
+    # Given: A client with one vector index created.
+    serve(discovery_class, server)
+
+    with Arcus(ZK_HOSTS, SERVICE_CODE) as client:
+        vector = client.vop_create("idx", 3)
+        assert vector is not None
+
+        # When: Elements are upserted by index name, by handle, and to a missing index.
+        by_name = client.vop_upsert("idx", "a", [1.0, 2.0, 3.0], meta={"n": 1})
+        by_handle = vector.upsert("b", [1.0, 2.0, 3.0])
+        missing = client.vop_upsert("nope", "a", [1.0, 2.0, 3.0])
+
+    # Then: Only the upserts to the existing index are stored.
+    assert by_name is True
+    assert by_handle is True
+    assert missing is False
+
+
+def test_vop_search_by_vector_and_by_vkey(
+    server: FakeServer,
+    discovery_class: MockType,
+) -> None:
+    # Given: A client with a vector index holding one element with metadata.
+    serve(discovery_class, server)
+
+    with Arcus(ZK_HOSTS, SERVICE_CODE) as client:
+        vector = client.vop_create("idx", 3)
+        assert vector is not None
+        vector.upsert("a", [1.0, 2.0, 3.0], meta={"n": 1})
+
+        # When: The index is searched by a vector, by a vkey, and on a missing index.
+        by_vector = client.vop_search("idx", [1.0, 2.0, 3.0], 5, filter="n = 1")
+        by_vkey = vector.search("a", 5, with_meta=True)
+        missing = client.vop_search("nope", "a", 5)
+
+    # Then: Both searches find the element, with its metadata when asked for.
+    assert by_vector == [("a", 0.0, None)]
+    assert by_vkey == [("a", 0.0, {"n": 1})]
+    assert missing is None
+
+
 def test_key_is_stored_on_its_owner_node(discovery_class: MockType) -> None:
     key = "가".encode()
 

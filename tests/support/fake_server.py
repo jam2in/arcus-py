@@ -1,4 +1,4 @@
-"""A local server that speaks just enough of the text protocol for get and set."""
+"""A local server that speaks just enough of the text protocol for the tests."""
 
 import socketserver
 import threading
@@ -10,6 +10,8 @@ from typing import Self
 class FakeServer:
     def __init__(self) -> None:
         self.items: dict[bytes, bytes] = {}
+        # The vkeys of each vector index, with the metadata JSON each was upserted with.
+        self.vectors: dict[bytes, dict[bytes, bytes]] = {}
         # Keys answered with this line, after which the server hangs up.
         self.errors: dict[bytes, bytes] = {}
         self.connections = 0
@@ -62,3 +64,40 @@ class FakeServer:
                 size = int(fields[2])
                 self.items[key] = rfile.read(size + 2)[:size]
                 wfile.write(b"STORED\r\n")
+            elif command == b"vop" and key == b"create":
+                index = fields[0]
+                if index in self.items:
+                    wfile.write(b"EXISTS\r\n")
+                else:
+                    self.items[index] = b""
+                    self.vectors[index] = {}
+                    wfile.write(b"CREATED\r\n")
+            elif command == b"vop" and key == b"upsert":
+                index, vkey, size, *options = fields
+                rfile.read(int(size) + 2)
+                meta = b"{}"
+                if options[:1] == [b"meta"]:
+                    meta = rfile.read(int(options[1]) + 2)[:-2]
+                if index in self.vectors:
+                    self.vectors[index][vkey] = meta
+                    wfile.write(b"STORED\r\n")
+                else:
+                    wfile.write(b"NOT_FOUND\r\n")
+            elif command == b"vop" and key == b"search":
+                # Every element scores 0; only the framing matters to the client.
+                index, source, value, k, *options = fields
+                if source == b"vector":
+                    rfile.read(int(value) + 2)
+                if b"filter" in options:
+                    rfile.read(int(options[options.index(b"filter") + 1]) + 2)
+                if index not in self.vectors:
+                    wfile.write(b"NOT_FOUND\r\n")
+                    continue
+                found = list(self.vectors[index].items())[: int(k)]
+                wfile.write(b"VECTORS %d\r\n" % len(found))
+                for vkey, meta in found:
+                    if b"withmeta" in options:
+                        wfile.write(b"%s 0 %d\r\n%s\r\n" % (vkey, len(meta), meta))
+                    else:
+                        wfile.write(b"%s 0\r\n" % vkey)
+                wfile.write(b"END\r\n")
