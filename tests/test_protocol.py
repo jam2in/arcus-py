@@ -3,15 +3,9 @@ from support.drive import drive
 from support.response_cases import CASES, Case
 
 from arcus import ArcusConnectionError
-from arcus._command.kv import (
-    MAX_EXPTIME,
-    MAX_KEY_LENGTH,
-    STICKY_EXPTIME,
-    encode_key,
-    prepare_get,
-    prepare_set,
-)
+from arcus._command.kv import prepare_get, prepare_set
 from arcus._protocol.framing import read_data_block
+from arcus._validation import MAX_EXPTIME, MAX_KEY_LENGTH, STICKY_EXPTIME, encode_key
 from arcus.transcoder import ArcusTranscoder
 
 T = ArcusTranscoder()

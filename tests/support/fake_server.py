@@ -1,4 +1,4 @@
-"""A local server that speaks just enough of the text protocol for get and set."""
+"""A local server that speaks just enough of the text protocol for the tests."""
 
 import socketserver
 import threading
@@ -62,3 +62,10 @@ class FakeServer:
                 size = int(fields[2])
                 self.items[key] = rfile.read(size + 2)[:size]
                 wfile.write(b"STORED\r\n")
+            elif command == b"vop" and key == b"create":
+                index = fields[0]
+                if index in self.items:
+                    wfile.write(b"EXISTS\r\n")
+                else:
+                    self.items[index] = b""
+                    wfile.write(b"CREATED\r\n")
