@@ -1,5 +1,6 @@
 """The synchronous Arcus client."""
 
+from collections.abc import Sequence
 from types import TracebackType
 from typing import Any, Final, Self
 
@@ -8,6 +9,7 @@ from arcus._command.vector import (
     Vector,
     VectorOptions,
     prepare_vop_create,
+    prepare_vop_upsert,
 )
 from arcus._config import (
     DEFAULT_CONNECT_TIMEOUT,
@@ -83,6 +85,19 @@ class Arcus:
         if not self._cluster.execute(index_bytes, exchange):
             return None
         return Vector(self, index)
+
+    def vop_upsert(
+        self,
+        index: str,
+        vkey: str,
+        vector: Sequence[float] | bytes,
+        *,
+        meta: dict[str, Any] | None = None,
+    ) -> bool:
+        """Store the vector under the key; False if the index is missing or full."""
+        index_bytes = _encode_key(index)
+        exchange = prepare_vop_upsert(index_bytes, vkey, vector, meta)
+        return self._cluster.execute(index_bytes, exchange)
 
     def close(self) -> None:
         """Abort running requests and release every resource; safe to repeat."""

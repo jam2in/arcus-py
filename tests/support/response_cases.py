@@ -14,6 +14,7 @@ from arcus._command.kv import prepare_get, prepare_set
 from arcus._command.vector import (
     VectorOptions,
     prepare_vop_create,
+    prepare_vop_upsert,
 )
 from arcus._protocol.request import Exchange
 from arcus.transcoder import ArcusTranscoder
@@ -40,6 +41,10 @@ def _set() -> Exchange[object]:
 
 def _vop_create() -> Exchange[object]:
     return prepare_vop_create(b"k", VectorOptions(dim=3))
+
+
+def _vop_upsert() -> Exchange[object]:
+    return prepare_vop_upsert(b"k", "v", [1.0], None)
 
 
 CASES: list[Case] = [
@@ -97,6 +102,22 @@ CASES: list[Case] = [
         "vop_create_bad_command_line",
         _vop_create,
         b"CLIENT_ERROR bad command line format\r\n",
+        error=ArcusClientError,
+    ),
+    Case("vop_upsert_stored", _vop_upsert, b"STORED\r\n", result=True),
+    Case("vop_upsert_replaced", _vop_upsert, b"REPLACED\r\n", result=True),
+    Case("vop_upsert_not_found", _vop_upsert, b"NOT_FOUND\r\n", result=False),
+    Case(
+        "vop_upsert_type_mismatch",
+        _vop_upsert,
+        b"TYPE_MISMATCH\r\n",
+        result=False,
+    ),
+    Case("vop_upsert_overflowed", _vop_upsert, b"OVERFLOWED\r\n", result=False),
+    Case(
+        "vop_upsert_bad_value",
+        _vop_upsert,
+        b"CLIENT_ERROR bad value\r\n",
         error=ArcusClientError,
     ),
     Case(

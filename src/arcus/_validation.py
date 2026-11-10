@@ -4,6 +4,7 @@ import re
 from typing import Final
 
 MAX_KEY_LENGTH: Final = 4_000
+MAX_VKEY_LENGTH: Final = 250
 
 # The server takes a 64-bit signed exptime; -1 makes a sticky item that
 # neither expires nor gets evicted.
@@ -21,6 +22,18 @@ def validate_key(key: str) -> None:
         raise ValueError(f"Key must be 1 to {MAX_KEY_LENGTH} bytes: {len(key_bytes)}")
     if _INVALID_KEY_BYTE.search(key_bytes):
         raise ValueError(f"Key contains invalid byte: {key_bytes!r}")
+
+
+def validate_vkey(vkey: str) -> None:
+    if not isinstance(vkey, str):
+        raise TypeError(f"VKey must be str, not {type(vkey).__name__}")
+    vkey_bytes = vkey.encode()
+    if not 1 <= len(vkey_bytes) <= MAX_VKEY_LENGTH:
+        raise ValueError(
+            f"VKey must be 1 to {MAX_VKEY_LENGTH} bytes: {len(vkey_bytes)}"
+        )
+    if _INVALID_KEY_BYTE.search(vkey_bytes):
+        raise ValueError(f"VKey contains invalid byte: {vkey_bytes!r}")
 
 
 def validate_exptime(exptime: int) -> None:

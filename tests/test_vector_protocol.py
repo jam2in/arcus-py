@@ -1,3 +1,6 @@
+import math
+import struct
+from collections.abc import Sequence
 from typing import Any
 
 import pytest
@@ -11,7 +14,9 @@ from arcus._command.vector import (
     Quant,
     VectorOptions,
     prepare_vop_create,
+    prepare_vop_upsert,
 )
+from arcus._validation import MAX_VKEY_LENGTH
 
 
 def _create(dim: int = 3, **options: Any) -> bytes:
@@ -121,3 +126,112 @@ def test_create_rejects_options_of_another_type() -> None:
     # When / Then: Preparing the exchange fails before any byte is sent.
     with pytest.raises(TypeError):
         prepare_vop_create(b"idx", options)
+
+
+def _upsert(
+    key: str = "v",
+    vector: Sequence[float] | bytes = (1.0, -2.5),
+    meta: dict[str, Any] | None = None,
+) -> bytes:
+    exchange = prepare_vop_upsert(b"idx", key, vector, meta)
+    _, sent = drive(exchange, b"STORED\r\n")
+    return sent
+
+
+def test_upsert_request_bytes() -> None:
+    # Given / When: An upsert exchange without metadata is driven.
+    sent = _upsert()
+
+    # Then: The vector is sent as little-endian f32s in a data block.
+    vector = struct.pack("<2f", 1.0, -2.5)
+    assert sent == b"vop upsert idx v 8\r\n" + vector + b"\r\n"
+
+
+def test_upsert_sends_meta_after_the_vector() -> None:
+    # Given / When: An upsert exchange with metadata is driven.
+    sent = _upsert(meta={"z": 1, "가": "값"})
+
+    # Then: The compact JSON, in key order and UTF-8, follows the vector.
+    meta = '{"z":1,"가":"값"}'.encode()
+    vector = struct.pack("<2f", 1.0, -2.5)
+    assert sent == (
+        b"vop upsert idx v 8 meta %d\r\n" % len(meta)
+        + vector
+        + b"\r\n"
+        + meta
+        + b"\r\n"
+    )
+
+
+def test_upsert_without_meta_sends_none() -> None:
+    # Given / When: An upsert exchange without metadata is driven.
+    sent = _upsert(meta=None)
+
+    # Then: Only the vector is sent.
+    assert sent == b"vop upsert idx v 8\r\n" + struct.pack("<2f", 1.0, -2.5) + b"\r\n"
+
+
+def test_upsert_sends_an_empty_meta_object() -> None:
+    # Given / When: An upsert exchange with empty metadata is driven.
+    sent = _upsert(meta={})
+
+    # Then: The empty object is sent after the vector.
+    assert sent.startswith(b"vop upsert idx v 8 meta 2\r\n")
+    assert sent.endswith(b"\r\n{}\r\n")
+
+
+@pytest.mark.parametrize(
+    "vector",
+    [
+        pytest.param(struct.pack("<2f", 1.0, -2.5), id="bytes"),
+        pytest.param(bytearray(struct.pack("<2f", 1.0, -2.5)), id="bytearray"),
+        pytest.param(memoryview(struct.pack("<2f", 1.0, -2.5)), id="memoryview"),
+    ],
+)
+def test_upsert_sends_vector_bytes_as_they_are(vector: bytes) -> None:
+    # Given / When: An upsert exchange with the vector already as f32 bytes.
+    sent = _upsert(vector=vector)
+
+    # Then: The bytes are sent unchanged, as a sequence of the same floats would be.
+    assert sent == _upsert(vector=[1.0, -2.5])
+
+
+def test_max_length_vkey_is_accepted() -> None:
+    # Given / When: An upsert with a vkey of exactly the maximum length is driven.
+    sent = _upsert(key="k" * MAX_VKEY_LENGTH)
+
+    # Then: The full vkey is sent.
+    assert sent.startswith(b"vop upsert idx " + b"k" * MAX_VKEY_LENGTH + b" 8\r\n")
+
+
+@pytest.mark.parametrize(
+    ("key", "vector", "meta", "error"),
+    [
+        pytest.param(
+            "k" * (MAX_VKEY_LENGTH + 1), [1.0], {}, ValueError, id="long-vkey"
+        ),
+        pytest.param("a b", [1.0], {}, ValueError, id="space-vkey"),
+        pytest.param("v", [], {}, ValueError, id="empty-vector"),
+        pytest.param("v", b"", {}, ValueError, id="empty-bytes"),
+        pytest.param("v", b"\x00" * 5, {}, ValueError, id="partial-f32-bytes"),
+        pytest.param("v", "1.0", {}, TypeError, id="str-vector"),
+        pytest.param("v", [math.nan], {}, ValueError, id="nan"),
+        pytest.param("v", [math.inf], {}, ValueError, id="inf"),
+        pytest.param("v", ["1"], {}, TypeError, id="str-element"),
+        pytest.param("v", [1e39], {}, OverflowError, id="past-f32"),
+        pytest.param("v", [1.0], [("a", 1)], TypeError, id="list-meta"),
+        pytest.param("v", [1.0], {"a": math.nan}, ValueError, id="nan-meta"),
+        pytest.param("v", [1.0], {"a": object()}, TypeError, id="unserializable-meta"),
+    ],
+)
+def test_invalid_upsert_is_rejected_before_iteration(
+    key: str,
+    vector: Any,
+    meta: Any,
+    error: type[Exception],
+) -> None:
+    # Given: An element the server cannot accept.
+
+    # When / Then: Preparing the exchange fails before any byte is sent.
+    with pytest.raises(error):
+        prepare_vop_upsert(b"idx", key, vector, meta)

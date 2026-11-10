@@ -10,6 +10,8 @@ from typing import Self
 class FakeServer:
     def __init__(self) -> None:
         self.items: dict[bytes, bytes] = {}
+        # The vkeys of each vector index, with the metadata JSON each was upserted with.
+        self.vectors: dict[bytes, dict[bytes, bytes]] = {}
         # Keys answered with this line, after which the server hangs up.
         self.errors: dict[bytes, bytes] = {}
         self.connections = 0
@@ -68,4 +70,16 @@ class FakeServer:
                     wfile.write(b"EXISTS\r\n")
                 else:
                     self.items[index] = b""
+                    self.vectors[index] = {}
                     wfile.write(b"CREATED\r\n")
+            elif command == b"vop" and key == b"upsert":
+                index, vkey, size, *options = fields
+                rfile.read(int(size) + 2)
+                meta = b"{}"
+                if options[:1] == [b"meta"]:
+                    meta = rfile.read(int(options[1]) + 2)[:-2]
+                if index in self.vectors:
+                    self.vectors[index][vkey] = meta
+                    wfile.write(b"STORED\r\n")
+                else:
+                    wfile.write(b"NOT_FOUND\r\n")
