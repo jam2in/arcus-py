@@ -91,6 +91,28 @@ def test_vop_create_returns_a_handle_once(
     assert again is None
 
 
+def test_vop_upsert_through_the_client_and_the_handle(
+    server: FakeServer,
+    discovery_class: MockType,
+) -> None:
+    # Given: A client with one vector index created.
+    serve(discovery_class, server)
+
+    with Arcus(ZK_HOSTS, SERVICE_CODE) as client:
+        vector = client.vop_create("idx", VectorOptions(dim=3))
+        assert vector is not None
+
+        # When: Elements are upserted by index name, by handle, and to a missing index.
+        by_name = client.vop_upsert("idx", "a", [1.0, 2.0, 3.0], meta={"n": 1})
+        by_handle = vector.upsert("b", [1.0, 2.0, 3.0])
+        missing = client.vop_upsert("nope", "a", [1.0, 2.0, 3.0])
+
+    # Then: Only the upserts to the existing index are stored.
+    assert by_name is True
+    assert by_handle is True
+    assert missing is False
+
+
 def test_key_is_stored_on_its_owner_node(discovery_class: MockType) -> None:
     key = "가".encode()
 

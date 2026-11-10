@@ -1,9 +1,11 @@
 """Vector command requests and response parsing, and the handle on an index."""
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final
 
+from arcus._command.vector._transcoder import encode_meta, encode_vector, encode_vkey
 from arcus._protocol.framing import CRLF
 from arcus._protocol.request import Exchange, ReadLine, Write
 from arcus._protocol.status import raise_unexpected
@@ -105,6 +107,41 @@ def prepare_vop_create(index: bytes, options: VectorOptions) -> Exchange[bool]:
     return _create(index, options)
 
 
+def _upsert(
+    index: bytes,
+    vkey: bytes,
+    vector: bytes,
+    meta: bytes,
+) -> Exchange[bool]:
+    header = b"vop upsert %s %s %d" % (index, vkey, len(vector))
+    if meta:
+        header += b" meta %d" % len(meta)
+        request = header + CRLF + vector + CRLF + meta + CRLF
+    else:
+        request = header + CRLF + vector + CRLF
+    yield Write(request)
+
+    line = yield ReadLine()
+    if line in (b"STORED", b"REPLACED"):
+        return True
+    if line in (b"NOT_FOUND", b"TYPE_MISMATCH", b"OVERFLOWED"):
+        return False
+    raise_unexpected(line)
+
+
+def prepare_vop_upsert(
+    index: bytes,
+    vkey: str,
+    vector: Sequence[float] | bytes,
+    meta: dict[str, Any] | None,
+) -> Exchange[bool]:
+    """Validate and encode the element before the exchange starts."""
+    key_bytes = encode_vkey(vkey)
+    vector_bytes = encode_vector(vector)
+    meta_bytes = encode_meta(meta)
+    return _upsert(index, key_bytes, vector_bytes, meta_bytes)
+
+
 class Vector:
     """A handle on one vector index; get it from ``Arcus.vop_create``."""
 
@@ -117,6 +154,15 @@ class Vector:
     @property
     def name(self) -> str:
         return self._name
+
+    def upsert(
+        self,
+        vkey: str,
+        vector: Sequence[float] | bytes,
+        *,
+        meta: dict[str, Any] | None = None,
+    ) -> bool:
+        return self._client.vop_upsert(self._name, vkey, vector, meta=meta)
 
     def __repr__(self) -> str:
         return f"Vector({self._name!r})"
