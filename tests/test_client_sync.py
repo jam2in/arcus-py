@@ -6,7 +6,7 @@ from support.fake_discovery import FakeDiscovery
 from support.fake_server import FakeServer
 
 import arcus
-from arcus import Arcus, ArcusError, ArcusServerError
+from arcus import Arcus, ArcusError, ArcusServerError, VectorOptions
 from arcus._cluster.locator import ArcusLocator
 
 ZK_HOSTS = "127.0.0.1:2181"
@@ -70,6 +70,25 @@ def test_set_then_get(server: FakeServer, discovery_class: MockType) -> None:
         timeout=3.0,
     )
     assert server.connections == 1
+
+
+def test_vop_create_returns_a_handle_once(
+    server: FakeServer,
+    discovery_class: MockType,
+) -> None:
+    # Given: A client for a service with one cache node.
+    serve(discovery_class, server)
+
+    with Arcus(ZK_HOSTS, SERVICE_CODE) as client:
+        # When: The same vector index is created twice.
+        options = VectorOptions(dim=3)
+        created = client.vop_create("idx", options)
+        again = client.vop_create("idx", options)
+
+    # Then: Only the first create returns a handle on the index.
+    assert created is not None
+    assert created.name == "idx"
+    assert again is None
 
 
 def test_key_is_stored_on_its_owner_node(discovery_class: MockType) -> None:

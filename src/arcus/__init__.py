@@ -2,6 +2,7 @@
 
 from importlib.metadata import version
 
+from ._command.vector import Metric, Quant, VectorOptions
 from .client import Arcus
 from .exceptions import (
     ArcusClientError,
@@ -24,5 +25,8 @@ __all__ = [
     "ArcusOperationTimeoutError",
     "ArcusPoolTimeoutError",
     "ArcusServerError",
+    "Metric",
+    "Quant",
+    "VectorOptions",
     "__version__",
 ]

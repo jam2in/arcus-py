@@ -3,7 +3,12 @@
 from types import TracebackType
 from typing import Any, Final, Self
 
-from arcus._command.kv import encode_key, prepare_get, prepare_set
+from arcus._command.kv import prepare_get, prepare_set
+from arcus._command.vector import (
+    Vector,
+    VectorOptions,
+    prepare_vop_create,
+)
 from arcus._config import (
     DEFAULT_CONNECT_TIMEOUT,
     DEFAULT_MAX_CONNECTIONS_PER_NODE,
@@ -13,6 +18,7 @@ from arcus._config import (
     ClientConfig,
 )
 from arcus._transport.sync.cluster import SyncCluster
+from arcus._validation import encode_key
 from arcus.transcoder import ArcusTranscoder
 
 # The transcoder keeps no state, so every client shares one.
@@ -59,6 +65,18 @@ class Arcus:
         key_bytes = encode_key(key)
         exchange = prepare_set(key_bytes, value, exptime, _TRANSCODER)
         return self._cluster.execute(key_bytes, exchange)
+
+    def vop_create(
+        self,
+        index: str,
+        options: VectorOptions,
+    ) -> Vector | None:
+        """Create a vector index and return its handle, or None if the key is taken."""
+        index_bytes = encode_key(index)
+        exchange = prepare_vop_create(index_bytes, options)
+        if not self._cluster.execute(index_bytes, exchange):
+            return None
+        return Vector(self, index)
 
     def close(self) -> None:
         """Abort running requests and release every resource; safe to repeat."""
