@@ -7,6 +7,7 @@ import pytest
 from support.drive import drive
 
 from arcus._command.vector import (
+    COUNT_RANGE,
     DIM_RANGE,
     EF_RANGE,
     M_RANGE,
@@ -14,8 +15,10 @@ from arcus._command.vector import (
     Quant,
     VectorOptions,
     prepare_vop_create,
+    prepare_vop_search,
     prepare_vop_upsert,
 )
+from arcus._command.vector._transcoder import MAX_FILTER_LENGTH
 from arcus._validation import MAX_VKEY_LENGTH
 
 
@@ -235,3 +238,94 @@ def test_invalid_upsert_is_rejected_before_iteration(
     # When / Then: Preparing the exchange fails before any byte is sent.
     with pytest.raises(error):
         prepare_vop_upsert(b"idx", key, vector, meta)
+
+
+def _search(
+    query: Sequence[float] | bytes | str,
+    count: int = 5,
+    filter: str | None = None,
+    with_meta: bool = False,
+) -> bytes:
+    exchange = prepare_vop_search(b"idx", query, count, filter, with_meta)
+    _, sent = drive(exchange, b"VECTORS 0\r\nEND\r\n")
+    return sent
+
+
+def test_search_by_vkey_request_bytes() -> None:
+    # Given / When: A search by a vkey is driven.
+    sent = _search("v")
+
+    # Then: The vkey is sent on the command line, with no body.
+    assert sent == b"vop search idx vkey v 5\r\n"
+
+
+def test_search_by_vector_request_bytes() -> None:
+    # Given / When: A search by a vector is driven.
+    sent = _search([1.0, -2.5])
+
+    # Then: The vector is sent as little-endian f32s in a data block.
+    vector = struct.pack("<2f", 1.0, -2.5)
+    assert sent == b"vop search idx vector 8 5\r\n" + vector + b"\r\n"
+
+
+def test_search_by_vector_bytes_request_bytes() -> None:
+    # Given / When: A search by a vector already as f32 bytes is driven.
+    vector = struct.pack("<2f", 1.0, -2.5)
+    sent = _search(vector)
+
+    # Then: The bytes are sent as the vector, not as a vkey.
+    assert sent == b"vop search idx vector 8 5\r\n" + vector + b"\r\n"
+
+
+def test_search_sends_the_filter_after_the_vector() -> None:
+    # Given / When: A search by a vector with a filter and metadata is driven.
+    sent = _search((1.0, -2.5), filter="cat = '가'", with_meta=True)
+
+    # Then: The UTF-8 filter follows the vector, and withmeta ends the line.
+    filter = "cat = '가'".encode()
+    vector = struct.pack("<2f", 1.0, -2.5)
+    assert sent == (
+        b"vop search idx vector 8 5 filter %d withmeta\r\n" % len(filter)
+        + vector
+        + b"\r\n"
+        + filter
+        + b"\r\n"
+    )
+
+
+def test_search_by_vkey_sends_only_the_filter() -> None:
+    # Given / When: A search by a vkey with a filter is driven.
+    sent = _search("v", filter="n > 1")
+
+    # Then: The filter is the whole body.
+    assert sent == b"vop search idx vkey v 5 filter 5\r\nn > 1\r\n"
+
+
+@pytest.mark.parametrize(
+    ("query", "count", "filter", "error"),
+    [
+        pytest.param("a b", 5, None, ValueError, id="space-vkey"),
+        pytest.param([], 5, None, ValueError, id="empty-vector"),
+        pytest.param(b"\x00\x00\x80", 5, None, ValueError, id="partial-f32-bytes"),
+        pytest.param([math.nan], 5, None, ValueError, id="nan"),
+        pytest.param("v", 0, None, ValueError, id="zero-count"),
+        pytest.param("v", COUNT_RANGE.stop, None, ValueError, id="too-large-count"),
+        pytest.param("v", True, None, TypeError, id="bool-count"),
+        pytest.param("v", 5, "", ValueError, id="empty-filter"),
+        pytest.param(
+            "v", 5, "a" * (MAX_FILTER_LENGTH + 1), ValueError, id="long-filter"
+        ),
+        pytest.param("v", 5, b"n = 1", TypeError, id="bytes-filter"),
+    ],
+)
+def test_invalid_search_is_rejected_before_iteration(
+    query: Any,
+    count: int,
+    filter: Any,
+    error: type[Exception],
+) -> None:
+    # Given: A search the server cannot accept.
+
+    # When / Then: Preparing the exchange fails before any byte is sent.
+    with pytest.raises(error):
+        prepare_vop_search(b"idx", query, count, filter, False)
