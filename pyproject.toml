@@ -30,6 +30,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=8",
+    "pytest-asyncio>=1.4",
     "pytest-mock>=3.17.0",
     "pytest-timeout>=2.3",
     "ruff==0.17.1",
@@ -70,6 +71,7 @@ testpaths = ["tests"]
 pythonpath = ["tests"]
 addopts = "--strict-config --strict-markers --import-mode=importlib"
 timeout = 30
+asyncio_mode = "auto"
 markers = ["integration: requires an isolated Arcus and ZooKeeper service"]
 
 [tool.ty.terminal]
