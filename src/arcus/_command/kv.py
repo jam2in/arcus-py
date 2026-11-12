@@ -76,5 +76,5 @@ def prepare_set(
     transcoder: ArcusTranscoder,
 ) -> Exchange[bool]:
     """Validate the exptime and encode the value before the exchange starts."""
-    exptime = validate_exptime(exptime)
+    validate_exptime(exptime)
     return _set(key, exptime, transcoder.encode(value))

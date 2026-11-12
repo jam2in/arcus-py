@@ -18,11 +18,17 @@ from arcus._config import (
     ClientConfig,
 )
 from arcus._transport.sync.cluster import SyncCluster
-from arcus._validation import encode_key
+from arcus._validation import validate_key
 from arcus.transcoder import ArcusTranscoder
 
 # The transcoder keeps no state, so every client shares one.
 _TRANSCODER: Final = ArcusTranscoder()
+
+
+# TODO: Should key validation and encoding be shared with the async client?
+def _encode_key(key: str) -> bytes:
+    validate_key(key)
+    return key.encode()
 
 
 class Arcus:
@@ -56,13 +62,13 @@ class Arcus:
 
     def get(self, key: str) -> Any | None:
         """Return the cached value, or None on a cache miss."""
-        key_bytes = encode_key(key)
+        key_bytes = _encode_key(key)
         exchange = prepare_get(key_bytes, _TRANSCODER)
         return self._cluster.execute(key_bytes, exchange)
 
     def set(self, key: str, value: Any, *, exptime: int = 0) -> bool:
         """Store the value in the cache and return whether it was stored."""
-        key_bytes = encode_key(key)
+        key_bytes = _encode_key(key)
         exchange = prepare_set(key_bytes, value, exptime, _TRANSCODER)
         return self._cluster.execute(key_bytes, exchange)
 
@@ -72,7 +78,7 @@ class Arcus:
         options: VectorOptions,
     ) -> Vector | None:
         """Create a vector index and return its handle, or None if the key is taken."""
-        index_bytes = encode_key(index)
+        index_bytes = _encode_key(index)
         exchange = prepare_vop_create(index_bytes, options)
         if not self._cluster.execute(index_bytes, exchange):
             return None

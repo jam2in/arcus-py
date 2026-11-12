@@ -5,7 +5,7 @@ from support.response_cases import CASES, Case
 from arcus import ArcusConnectionError
 from arcus._command.kv import prepare_get, prepare_set
 from arcus._protocol.framing import read_data_block
-from arcus._validation import MAX_EXPTIME, MAX_KEY_LENGTH, STICKY_EXPTIME, encode_key
+from arcus._validation import MAX_EXPTIME, MAX_KEY_LENGTH, STICKY_EXPTIME, validate_key
 from arcus.transcoder import ArcusTranscoder
 
 T = ArcusTranscoder()
@@ -33,20 +33,13 @@ def test_set_request_bytes() -> None:
     assert sent == b'set k 0 10 3\r\n"v"\r\n'
 
 
-def test_key_is_encoded_as_utf8() -> None:
-    # Given / When: A non-ASCII key is encoded.
-    key = encode_key("가")
-
-    # Then: It becomes the UTF-8 bytes used for routing and the command line.
-    assert key == "가".encode()
-
-
 def test_max_length_key_is_accepted() -> None:
     # Given: A key of exactly the maximum length.
     key = "k" * MAX_KEY_LENGTH
 
-    # When: The key is encoded and a get exchange is driven.
-    _, sent = drive(prepare_get(encode_key(key), T), b"END\r\n")
+    # When: The key is validated and a get exchange is driven.
+    validate_key(key)
+    _, sent = drive(prepare_get(key.encode(), T), b"END\r\n")
 
     # Then: The full key is sent.
     assert sent == b"get " + key.encode() + b"\r\n"
@@ -67,9 +60,9 @@ def test_max_length_key_is_accepted() -> None:
 def test_invalid_key_is_rejected(key: object, error: type[Exception]) -> None:
     # Given: A key that cannot be sent on the protocol line.
 
-    # When / Then: Encoding the key fails before any exchange is prepared.
+    # When / Then: Validating the key fails before any exchange is prepared.
     with pytest.raises(error):
-        encode_key(key)  # ty: ignore[invalid-argument-type] # invalid on purpose
+        validate_key(key)  # ty: ignore[invalid-argument-type] # invalid on purpose
 
 
 def test_none_value_is_rejected_before_iteration() -> None:
