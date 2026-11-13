@@ -1,12 +1,15 @@
-"""Encoding of the vkey, vector and metadata that vector commands carry."""
+"""Encoding of what vector commands carry, and decoding of returned metadata."""
 
 import json
 import math
 import struct
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, Final
 
 from arcus._validation import validate_vkey
+from arcus.exceptions import ArcusDecodeError
+
+MAX_FILTER_LENGTH: Final = 4096
 
 
 def encode_vkey(vkey: str) -> bytes:
@@ -41,3 +44,26 @@ def encode_meta(meta: dict[str, Any] | None) -> bytes:
     return json.dumps(
         meta, ensure_ascii=False, allow_nan=False, separators=(",", ":")
     ).encode()
+
+
+def decode_meta(vkey: str, data: bytes | None) -> dict[str, Any] | None:
+    if data is None:
+        return None
+    try:
+        return json.loads(data)
+    except (ValueError, RecursionError) as error:
+        raise ArcusDecodeError(f"Failed to decode metadata of {vkey!r}") from error
+
+
+def encode_filter(filter: str | None) -> bytes:
+    if filter is None:
+        return b""
+    if not isinstance(filter, str):
+        raise TypeError(f"Filter must be str, not {type(filter).__name__}")
+    filter_bytes = filter.encode()
+    if not 1 <= len(filter_bytes) <= MAX_FILTER_LENGTH:
+        raise ValueError(
+            f"Filter must be 1 to {MAX_FILTER_LENGTH} bytes: {len(filter_bytes)}"
+        )
+
+    return filter_bytes
