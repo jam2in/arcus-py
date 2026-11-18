@@ -33,6 +33,13 @@ def ping() -> Exchange[bytes]:
     return line
 
 
+def answer_pong(size: int, flags: int = 0) -> bytes:
+    """Answer every ping; a peek finds nothing, as on an open idle socket."""
+    if flags & socket.MSG_PEEK:
+        raise BlockingIOError
+    return b"PONG\r\n"
+
+
 @pytest.fixture
 def opened() -> list[SyncConnection]:
     return []
@@ -42,7 +49,7 @@ def opened() -> list[SyncConnection]:
 def connect(mocker: MockerFixture, opened: list[SyncConnection]) -> MockType:
     def open_connection(address: str, **_: float) -> SyncConnection:
         sock = mocker.Mock(spec=socket.socket)
-        sock.recv.return_value = b"PONG\r\n"
+        sock.recv.side_effect = answer_pong
         connection = SyncConnection(address, sock)
         opened.append(connection)
         return connection
@@ -219,7 +226,13 @@ def test_broken_connection_is_replaced(
     cluster.execute(b"k", ping())
     sock = opened[0]._socket
     assert isinstance(sock, Mock)
-    sock.recv.side_effect = ConnectionResetError()
+
+    def reset_on_read(size: int, flags: int = 0) -> bytes:
+        if flags & socket.MSG_PEEK:
+            raise BlockingIOError
+        raise ConnectionResetError
+
+    sock.recv.side_effect = reset_on_read
 
     # When: A request fails on it, and another request follows.
     with pytest.raises(ArcusConnectionError):
@@ -227,6 +240,28 @@ def test_broken_connection_is_replaced(
     result = cluster.execute(b"k", ping())
 
     # Then: The broken connection is discarded and a new one is opened.
+    assert result == b"PONG"
+    assert connect.call_count == 2
+    assert opened[0].broken
+
+
+def test_idle_connection_closed_by_node_is_replaced(
+    connect: MockType,
+    make_cluster: MakeCluster,
+    opened: list[SyncConnection],
+) -> None:
+    # Given: An idle connection that the node closed, e.g. on restart.
+    cluster, _ = make_cluster(FakeDiscovery([NODE_A]))
+    cluster.execute(b"k", ping())
+    sock = opened[0]._socket
+    assert isinstance(sock, Mock)
+    sock.recv.side_effect = None
+    sock.recv.return_value = b""
+
+    # When: The next request is made.
+    result = cluster.execute(b"k", ping())
+
+    # Then: It runs on a new connection instead of failing.
     assert result == b"PONG"
     assert connect.call_count == 2
     assert opened[0].broken

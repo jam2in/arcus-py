@@ -19,7 +19,10 @@ SETTLE = 0.05
 @pytest.fixture
 def connect(mocker: MockerFixture) -> MockType:
     def open_connection(address: str) -> SyncConnection:
-        return SyncConnection(address, mocker.Mock(spec=socket.socket))
+        sock = mocker.Mock(spec=socket.socket)
+        # Nothing to read, as on an open idle socket.
+        sock.recv.side_effect = BlockingIOError
+        return SyncConnection(address, sock)
 
     return mocker.Mock(side_effect=open_connection)
 
@@ -100,6 +103,44 @@ def test_broken_connection_is_closed_on_release(connect: MockType) -> None:
     sock_of(broken).close.assert_called_once()
     assert connection is not broken
     assert connect.call_count == 2
+
+
+def test_idle_connection_closed_by_node_is_replaced(connect: MockType) -> None:
+    # Given: An idle connection that the node closed, e.g. on restart.
+    pool = make_pool(connect, max_size=1)
+    closed = pool.acquire()
+    pool.release(closed)
+    sock_of(closed).recv.side_effect = None
+    sock_of(closed).recv.return_value = b""
+
+    # When: A connection is acquired.
+    connection = pool.acquire()
+
+    # Then: The closed one is discarded and a new one is opened.
+    sock_of(closed).close.assert_called_once()
+    assert connection is not closed
+    assert connect.call_count == 2
+    assert pool.in_use == 1
+    assert pool.idle == 0
+
+
+def test_closed_idle_connection_is_skipped_for_open_one(connect: MockType) -> None:
+    # Given: Two idle connections, the newer one reset by the node.
+    pool = make_pool(connect)
+    open_one = pool.acquire()
+    closed = pool.acquire()
+    pool.release(open_one)
+    pool.release(closed)
+    sock_of(closed).recv.side_effect = ConnectionResetError
+
+    # When: A connection is acquired.
+    connection = pool.acquire()
+
+    # Then: The reset one is discarded and the open one is lent.
+    sock_of(closed).close.assert_called_once()
+    assert connection is open_one
+    assert connect.call_count == 2
+    assert pool.idle == 0
 
 
 def test_acquire_times_out_when_pool_is_full(connect: MockType) -> None:

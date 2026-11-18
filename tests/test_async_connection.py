@@ -1,5 +1,6 @@
 import asyncio
 import socket
+import struct
 from collections.abc import Callable
 
 import pytest
@@ -15,6 +16,8 @@ from arcus.transcoder import ArcusTranscoder
 ADDRESS = "127.0.0.1:11211"
 CONNECTION_TIMEOUT = 0.05
 SOCKET_TIMEOUT = 0.05
+# Long enough for the event loop to read what the peer sent.
+SETTLE = 0.05
 
 T = ArcusTranscoder()
 
@@ -64,6 +67,25 @@ async def open_pair(
     reader, writer = await asyncio.open_connection(sock=client)
     connection = AsyncConnection(ADDRESS, reader, writer, socket_timeout=socket_timeout)
     return connection, peer
+
+
+async def open_tcp_pair() -> tuple[AsyncConnection, socket.socket]:
+    """Open a connection on a loopback TCP socket and return it with its peer."""
+    with socket.create_server(("127.0.0.1", 0)) as server:
+        reader, writer = await asyncio.open_connection(*server.getsockname())
+        peer, _ = server.accept()
+    connection = AsyncConnection(ADDRESS, reader, writer, socket_timeout=SOCKET_TIMEOUT)
+    return connection, peer
+
+
+def close_peer(peer: socket.socket) -> None:
+    peer.close()
+
+
+def reset_peer(peer: socket.socket) -> None:
+    # A zero linger time makes close() send RST instead of FIN.
+    peer.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    peer.close()
 
 
 async def test_open_returns_connection(open_connection: MockType) -> None:
@@ -264,6 +286,46 @@ async def test_abort_closes_transport(
     writer.transport.abort.assert_called_once_with()
     writer.close.assert_not_called()
     assert connection.broken
+
+
+async def test_idle_connection_is_reusable() -> None:
+    # Given: An open connection whose peer has sent nothing.
+    connection, peer = await open_tcp_pair()
+
+    with peer:
+        # When: The event loop runs for a while.
+        await asyncio.sleep(SETTLE)
+
+        # Then: It is still reusable.
+        assert connection.is_reusable()
+    connection.abort()
+
+
+@pytest.mark.parametrize("act", [close_peer, reset_peer], ids=["closed", "reset"])
+async def test_idle_connection_left_by_peer_is_not_reusable(
+    act: Callable[[socket.socket], None],
+) -> None:
+    # Given: An idle connection.
+    connection, peer = await open_tcp_pair()
+
+    with peer:
+        # When: The peer closes or resets it, and the event loop reads that.
+        act(peer)
+        await asyncio.sleep(SETTLE)
+
+        # Then: It is not reusable.
+        assert not connection.is_reusable()
+    connection.abort()
+
+
+async def test_broken_connection_is_not_reusable(
+    connection: AsyncConnection,
+) -> None:
+    # Given: A connection that was aborted.
+    connection.abort()
+
+    # When / Then: It is not reusable.
+    assert not connection.is_reusable()
 
 
 def read_line() -> Exchange[bytes]:

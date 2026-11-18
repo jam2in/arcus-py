@@ -1,5 +1,8 @@
+import select
 import socket
+import struct
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -346,6 +349,74 @@ def test_abort_wakes_blocked_recv() -> None:
         # Then: The receiver fails at once instead of waiting for the timeout.
         with pytest.raises(ArcusConnectionError):
             receiving.result(timeout=1)
+
+
+def tcp_pair() -> tuple[socket.socket, socket.socket]:
+    """Return a connected loopback TCP socket and its peer."""
+    with socket.create_server(("127.0.0.1", 0)) as server:
+        client = socket.create_connection(server.getsockname())
+        peer, _ = server.accept()
+    client.settimeout(SOCKET_TIMEOUT)
+    return client, peer
+
+
+def close_peer(peer: socket.socket) -> None:
+    peer.close()
+
+
+def reset_peer(peer: socket.socket) -> None:
+    # A zero linger time makes close() send RST instead of FIN.
+    peer.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    peer.close()
+
+
+def write_unasked(peer: socket.socket) -> None:
+    peer.sendall(b"X")
+
+
+def test_idle_connection_is_reusable() -> None:
+    # Given: An open connection whose peer has sent nothing.
+    client, peer = tcp_pair()
+    connection = SyncConnection(ADDRESS, client)
+
+    with client, peer:
+        # When / Then: It is reusable and keeps its socket timeout.
+        assert connection.is_reusable()
+        assert client.gettimeout() == SOCKET_TIMEOUT
+
+
+@pytest.mark.parametrize(
+    "act",
+    [close_peer, reset_peer, write_unasked],
+    ids=["closed", "reset", "unasked-data"],
+)
+def test_idle_connection_left_by_peer_is_not_reusable(
+    act: Callable[[socket.socket], None],
+) -> None:
+    # Given: An idle connection.
+    client, peer = tcp_pair()
+    connection = SyncConnection(ADDRESS, client)
+
+    with client, peer:
+        # When: The peer closes, resets, or writes without a request.
+        act(peer)
+        select.select([client], [], [], 1)
+
+        # Then: It is not reusable and keeps its socket timeout.
+        assert not connection.is_reusable()
+        assert client.gettimeout() == SOCKET_TIMEOUT
+
+
+def test_broken_connection_is_not_reusable(
+    connection: SyncConnection,
+    sock: MockType,
+) -> None:
+    # Given: A connection that was closed.
+    connection.close()
+
+    # When / Then: It is not reusable, without touching the socket.
+    assert not connection.is_reusable()
+    sock.recv.assert_not_called()
 
 
 def read_line() -> Exchange[bytes]:
