@@ -15,6 +15,8 @@ from arcus._command.vector import (
     Quant,
     VectorOptions,
     prepare_vop_create,
+    prepare_vop_delete,
+    prepare_vop_drop,
     prepare_vop_search,
     prepare_vop_upsert,
 )
@@ -329,3 +331,39 @@ def test_invalid_search_is_rejected_before_iteration(
     # When / Then: Preparing the exchange fails before any byte is sent.
     with pytest.raises(error):
         prepare_vop_search(b"idx", query, count, filter, False)
+
+
+def test_delete_request_bytes() -> None:
+    # Given / When: A delete exchange is driven.
+    _, sent = drive(prepare_vop_delete(b"idx", "v"), b"DELETED\r\n")
+
+    # Then: The index and vkey are sent on the command line.
+    assert sent == b"vop delete idx v\r\n"
+
+
+@pytest.mark.parametrize(
+    ("vkey", "error"),
+    [
+        pytest.param("", ValueError, id="empty-vkey"),
+        pytest.param("a b", ValueError, id="space-vkey"),
+        pytest.param("a" * (MAX_VKEY_LENGTH + 1), ValueError, id="long-vkey"),
+        pytest.param(b"v", TypeError, id="bytes-vkey"),
+    ],
+)
+def test_invalid_delete_is_rejected_before_iteration(
+    vkey: Any,
+    error: type[Exception],
+) -> None:
+    # Given: A vkey the server cannot accept.
+
+    # When / Then: Preparing the exchange fails before any byte is sent.
+    with pytest.raises(error):
+        prepare_vop_delete(b"idx", vkey)
+
+
+def test_drop_request_bytes() -> None:
+    # Given / When: A drop exchange is driven.
+    _, sent = drive(prepare_vop_drop(b"idx"), b"DROPPED\r\n")
+
+    # Then: Only the index is sent on the command line.
+    assert sent == b"vop drop idx\r\n"

@@ -101,3 +101,18 @@ class FakeServer:
                     else:
                         wfile.write(b"%s 0\r\n" % vkey)
                 wfile.write(b"END\r\n")
+            elif command == b"vop" and key == b"delete":
+                index, vkey = fields
+                if index not in self.vectors:
+                    wfile.write(b"NOT_FOUND\r\n")
+                elif self.vectors[index].pop(vkey, None) is None:
+                    wfile.write(b"NOT_FOUND_ELEMENT\r\n")
+                else:
+                    wfile.write(b"DELETED\r\n")
+            elif command == b"vop" and key == b"drop":
+                (index,) = fields
+                if self.vectors.pop(index, None) is None:
+                    wfile.write(b"NOT_FOUND\r\n")
+                else:
+                    del self.items[index]
+                    wfile.write(b"DROPPED\r\n")

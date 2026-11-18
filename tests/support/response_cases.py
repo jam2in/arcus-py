@@ -14,6 +14,8 @@ from arcus._command.kv import prepare_get, prepare_set
 from arcus._command.vector import (
     VectorOptions,
     prepare_vop_create,
+    prepare_vop_delete,
+    prepare_vop_drop,
     prepare_vop_search,
     prepare_vop_upsert,
 )
@@ -54,6 +56,14 @@ def _vop_search() -> Exchange[object]:
 
 def _vop_search_with_meta() -> Exchange[object]:
     return prepare_vop_search(b"k", "v", 2, None, True)
+
+
+def _vop_delete() -> Exchange[object]:
+    return prepare_vop_delete(b"k", "v")
+
+
+def _vop_drop() -> Exchange[object]:
+    return prepare_vop_drop(b"k")
 
 
 CASES: list[Case] = [
@@ -174,6 +184,35 @@ CASES: list[Case] = [
         _vop_search,
         b"CLIENT_ERROR bad value\r\n",
         error=ArcusClientError,
+    ),
+    Case("vop_delete_deleted", _vop_delete, b"DELETED\r\n", result=True),
+    Case("vop_delete_not_found", _vop_delete, b"NOT_FOUND\r\n", result=False),
+    Case(
+        "vop_delete_no_element",
+        _vop_delete,
+        b"NOT_FOUND_ELEMENT\r\n",
+        result=False,
+    ),
+    Case(
+        "vop_delete_type_mismatch",
+        _vop_delete,
+        b"TYPE_MISMATCH\r\n",
+        result=False,
+    ),
+    Case(
+        "vop_delete_unexpected",
+        _vop_delete,
+        b"STORED\r\n",
+        error=ArcusConnectionError,
+    ),
+    Case("vop_drop_dropped", _vop_drop, b"DROPPED\r\n", result=True),
+    Case("vop_drop_not_found", _vop_drop, b"NOT_FOUND\r\n", result=False),
+    Case("vop_drop_type_mismatch", _vop_drop, b"TYPE_MISMATCH\r\n", result=False),
+    Case(
+        "vop_drop_unexpected",
+        _vop_drop,
+        b"DELETED\r\n",
+        error=ArcusConnectionError,
     ),
     Case(
         "server_error",
