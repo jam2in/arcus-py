@@ -260,6 +260,40 @@ def prepare_vop_search(
         return _search_by_vector(index, vector_bytes, count, filter_bytes, with_meta)
 
 
+def _delete(index: bytes, vkey: bytes) -> Exchange[bool]:
+    request = b"vop delete %s %s" % (index, vkey) + CRLF
+    yield Write(request)
+
+    line = yield ReadLine()
+    if line == b"DELETED":
+        return True
+    if line in (b"NOT_FOUND", b"NOT_FOUND_ELEMENT", b"TYPE_MISMATCH"):
+        return False
+    raise_unexpected(line)
+
+
+def prepare_vop_delete(index: bytes, vkey: str) -> Exchange[bool]:
+    """Validate and encode the vkey before the exchange starts."""
+    vkey_bytes = encode_vkey(vkey)
+    return _delete(index, vkey_bytes)
+
+
+def _drop(index: bytes) -> Exchange[bool]:
+    request = b"vop drop %s" % index + CRLF
+    yield Write(request)
+
+    line = yield ReadLine()
+    if line == b"DROPPED":
+        return True
+    if line in (b"NOT_FOUND", b"TYPE_MISMATCH"):
+        return False
+    raise_unexpected(line)
+
+
+def prepare_vop_drop(index: bytes) -> Exchange[bool]:
+    return _drop(index)
+
+
 class Vector:
     """A handle on one vector index; get it from ``Arcus.vop_create``."""
 
@@ -293,6 +327,12 @@ class Vector:
         return self._client.vop_search(
             self._name, query, count, filter=filter, with_meta=with_meta
         )
+
+    def delete(self, vkey: str) -> bool:
+        return self._client.vop_delete(self._name, vkey)
+
+    def drop(self) -> bool:
+        return self._client.vop_drop(self._name)
 
     def __repr__(self) -> str:
         return f"Vector({self._name!r})"

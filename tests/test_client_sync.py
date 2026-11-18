@@ -136,6 +136,59 @@ def test_vop_search_by_vector_and_by_vkey(
     assert missing is None
 
 
+def test_vop_delete_through_the_client_and_the_handle(
+    server: FakeServer,
+    discovery_class: MockType,
+) -> None:
+    # Given: A client with a vector index holding two elements.
+    serve(discovery_class, server)
+
+    with Arcus(ZK_HOSTS, SERVICE_CODE) as client:
+        vector = client.vop_create("idx", VectorOptions(dim=3))
+        assert vector is not None
+        vector.upsert("a", [1.0, 2.0, 3.0])
+        vector.upsert("b", [1.0, 2.0, 3.0])
+
+        # When: Elements are deleted by index name, by handle, again, and on a missing
+        # index.
+        by_name = client.vop_delete("idx", "a")
+        by_handle = vector.delete("b")
+        again = vector.delete("a")
+        missing = client.vop_delete("nope", "a")
+        left = vector.search([1.0, 2.0, 3.0], 5)
+
+    # Then: Only the deletes of present elements succeed, and none is left.
+    assert by_name is True
+    assert by_handle is True
+    assert again is False
+    assert missing is False
+    assert left == []
+
+
+def test_vop_drop_removes_the_index(
+    server: FakeServer,
+    discovery_class: MockType,
+) -> None:
+    # Given: A client with one vector index created.
+    serve(discovery_class, server)
+
+    with Arcus(ZK_HOSTS, SERVICE_CODE) as client:
+        vector = client.vop_create("idx", VectorOptions(dim=3))
+        assert vector is not None
+
+        # When: The index is dropped by handle, then again by name.
+        dropped = vector.drop()
+        again = client.vop_drop("idx")
+        searched = client.vop_search("idx", [1.0, 2.0, 3.0], 5)
+        recreated = client.vop_create("idx", VectorOptions(dim=3))
+
+    # Then: Only the first drop succeeds, and the name is free again.
+    assert dropped is True
+    assert again is False
+    assert searched is None
+    assert recreated is not None
+
+
 def test_key_is_stored_on_its_owner_node(discovery_class: MockType) -> None:
     key = "가".encode()
 

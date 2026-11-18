@@ -10,6 +10,8 @@ from arcus._command.vector import (
     Vector,
     VectorOptions,
     prepare_vop_create,
+    prepare_vop_delete,
+    prepare_vop_drop,
     prepare_vop_search,
     prepare_vop_upsert,
 )
@@ -113,6 +115,18 @@ class Arcus:
         """Return the count nearest elements; None if the index or vkey is missing."""
         index_bytes = _encode_key(index)
         exchange = prepare_vop_search(index_bytes, query, count, filter, with_meta)
+        return self._cluster.execute(index_bytes, exchange)
+
+    def vop_delete(self, index: str, vkey: str) -> bool:
+        """Delete the element; False if the index or the element is missing."""
+        index_bytes = _encode_key(index)
+        exchange = prepare_vop_delete(index_bytes, vkey)
+        return self._cluster.execute(index_bytes, exchange)
+
+    def vop_drop(self, index: str) -> bool:
+        """Drop the index with its elements; False if the index is missing."""
+        index_bytes = _encode_key(index)
+        exchange = prepare_vop_drop(index_bytes)
         return self._cluster.execute(index_bytes, exchange)
 
     def close(self) -> None:
