@@ -40,6 +40,8 @@ def connect(mocker: MockerFixture, opened: list[AsyncConnection]) -> MockType:
     async def open_connection(address: str, **_: float) -> AsyncConnection:
         reader = mocker.Mock(spec=asyncio.StreamReader)
         reader.readuntil.return_value = b"PONG\r\n"
+        reader.at_eof.return_value = False
+        reader.exception.return_value = None
         writer = mocker.Mock(spec=asyncio.StreamWriter)
         connection = AsyncConnection(address, reader, writer, socket_timeout=5)
         opened.append(connection)
@@ -228,6 +230,26 @@ async def test_broken_connection_is_replaced(
     result = await cluster.execute(b"k", ping())
 
     # Then: The broken connection is discarded and a new one is opened.
+    assert result == b"PONG"
+    assert connect.call_count == 2
+    assert opened[0].broken
+
+
+async def test_idle_connection_closed_by_node_is_replaced(
+    connect: MockType,
+    make_cluster: MakeCluster,
+    opened: list[AsyncConnection],
+) -> None:
+    # Given: An idle connection that the node closed, e.g. on restart.
+    cluster, _ = make_cluster(FakeDiscovery([NODE_A]))
+    await cluster.execute(b"k", ping())
+    reader = cast(MockType, opened[0]._reader)
+    reader.at_eof.return_value = True
+
+    # When: The next request is made.
+    result = await cluster.execute(b"k", ping())
+
+    # Then: It runs on a new connection instead of failing.
     assert result == b"PONG"
     assert connect.call_count == 2
     assert opened[0].broken
