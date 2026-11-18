@@ -60,6 +60,14 @@ class AsyncConnection:
         self.broken = True
         self._writer.transport.abort()
 
+    def is_reusable(self) -> bool:
+        """Report whether the node has not closed or reset this idle connection."""
+        return (
+            not self.broken
+            and not self._reader.at_eof()
+            and self._reader.exception() is None
+        )
+
     async def send(self, data: bytes) -> None:
         """Send all bytes without modifying the payload."""
         try:
