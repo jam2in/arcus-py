@@ -1,5 +1,7 @@
 """Public exceptions raised by the Arcus clients."""
 
+from collections.abc import Sequence
+
 
 class ArcusError(Exception):
     """Base class for every error raised by arcus."""
@@ -30,3 +32,12 @@ class ArcusClientError(ArcusError):
 
 class ArcusServerError(ArcusError):
     """The cache server failed to process the request (SERVER_ERROR)."""
+
+
+class ArcusErrorGroup(ExceptionGroup[ArcusError], ArcusError):
+    """A request to several cache nodes failed on some; exceptions hold each error."""
+
+    def derive(self, excs: Sequence[ArcusError]) -> "ArcusErrorGroup":
+        # except* splits the group with derive(); keep the split parts catchable
+        # as ArcusError.
+        return ArcusErrorGroup(self.message, excs)
