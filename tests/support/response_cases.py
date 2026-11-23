@@ -10,6 +10,7 @@ from arcus import (
     ArcusError,
     ArcusServerError,
 )
+from arcus._command.flush import prepare_flush
 from arcus._command.kv import prepare_get, prepare_set
 from arcus._command.vector import (
     VectorOptions,
@@ -64,6 +65,14 @@ def _vop_delete() -> Exchange[object]:
 
 def _vop_drop() -> Exchange[object]:
     return prepare_vop_drop(b"k")
+
+
+def _flush_all() -> Exchange[object]:
+    return prepare_flush(None, 0)()
+
+
+def _flush_prefix() -> Exchange[object]:
+    return prepare_flush(b"p", 0)()
 
 
 CASES: list[Case] = [
@@ -213,6 +222,15 @@ CASES: list[Case] = [
         _vop_drop,
         b"DELETED\r\n",
         error=ArcusConnectionError,
+    ),
+    Case("flush_all_ok", _flush_all, b"OK\r\n", True),
+    Case("flush_prefix_ok", _flush_prefix, b"OK\r\n", True),
+    Case("flush_prefix_not_found", _flush_prefix, b"NOT_FOUND\r\n", False),
+    Case(
+        "flush_prefix_too_long",
+        _flush_prefix,
+        b"CLIENT_ERROR too long prefix name\r\n",
+        error=ArcusClientError,
     ),
     Case(
         "server_error",

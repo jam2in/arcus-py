@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from types import TracebackType
 from typing import Any, Final, Self
 
+from arcus._command.flush import prepare_flush
 from arcus._command.kv import prepare_get, prepare_set
 from arcus._command.vector import (
     SearchResult,
@@ -24,7 +25,7 @@ from arcus._config import (
     ClientConfig,
 )
 from arcus._transport.sync.cluster import SyncCluster
-from arcus._validation import validate_key
+from arcus._validation import validate_key, validate_prefix
 from arcus.transcoder import ArcusTranscoder
 
 # The transcoder keeps no state, so every client shares one.
@@ -77,6 +78,15 @@ class Arcus:
         key_bytes = _encode_key(key)
         exchange = prepare_set(key_bytes, value, exptime, _TRANSCODER)
         return self._cluster.execute(key_bytes, exchange)
+
+    def flush(self, prefix: str | None = None, *, delay: int = 0) -> bool:
+        """Flush every node, or only the prefix; False if no node holds the prefix."""
+        prefix_bytes = None
+        if prefix is not None:
+            validate_prefix(prefix)
+            prefix_bytes = prefix.encode()
+        create_exchange = prepare_flush(prefix_bytes, delay)
+        return any(self._cluster.execute_all(create_exchange))
 
     def vop_create(
         self,

@@ -3,9 +3,17 @@ from support.drive import drive
 from support.response_cases import CASES, Case
 
 from arcus import ArcusConnectionError
+from arcus._command.flush import prepare_flush
 from arcus._command.kv import prepare_get, prepare_set
 from arcus._protocol.framing import read_data_block
-from arcus._validation import MAX_EXPTIME, MAX_KEY_LENGTH, STICKY_EXPTIME, validate_key
+from arcus._validation import (
+    MAX_EXPTIME,
+    MAX_KEY_LENGTH,
+    MAX_PREFIX_LENGTH,
+    STICKY_EXPTIME,
+    validate_key,
+    validate_prefix,
+)
 from arcus.transcoder import ArcusTranscoder
 
 T = ArcusTranscoder()
@@ -110,6 +118,79 @@ def test_invalid_exptime_is_rejected_before_iteration(
     # When / Then: Preparing the exchange fails before any byte is sent.
     with pytest.raises(error, match="Exptime"):
         prepare_set(b"k", "v", exptime, T)  # ty: ignore[invalid-argument-type] # invalid on purpose
+
+
+@pytest.mark.parametrize(
+    ("prefix", "delay", "request_bytes"),
+    [
+        pytest.param(None, 0, b"flush_all 0\r\n", id="all"),
+        pytest.param(b"p", 10, b"flush_prefix p 10\r\n", id="prefix"),
+        pytest.param(b"", 0, b"flush_prefix <null> 0\r\n", id="null-prefix"),
+        pytest.param(
+            None,
+            MAX_EXPTIME,
+            b"flush_all 9223372036854775807\r\n",
+            id="max-delay",
+        ),
+    ],
+)
+def test_flush_request_bytes(
+    prefix: bytes | None,
+    delay: int,
+    request_bytes: bytes,
+) -> None:
+    # Given: A factory of flush exchanges.
+    create_exchange = prepare_flush(prefix, delay)
+
+    # When: Two exchanges from it are driven.
+    _, first = drive(create_exchange(), b"OK\r\n")
+    _, second = drive(create_exchange(), b"OK\r\n")
+
+    # Then: Each sends the same flush command line.
+    assert first == second == request_bytes
+
+
+@pytest.mark.parametrize(
+    ("delay", "error"),
+    [
+        pytest.param(True, TypeError, id="bool"),
+        pytest.param(1.5, TypeError, id="float"),
+        pytest.param(-1, ValueError, id="negative"),
+        pytest.param(MAX_EXPTIME + 1, ValueError, id="too-large"),
+    ],
+)
+def test_invalid_flush_delay_is_rejected(
+    delay: object,
+    error: type[Exception],
+) -> None:
+    # Given: A delay the server cannot accept.
+
+    # When / Then: Preparing the flush fails before any exchange is made.
+    with pytest.raises(error, match="Delay"):
+        prepare_flush(None, delay)  # ty: ignore[invalid-argument-type] # invalid on purpose
+
+
+def test_prefix_bounds_are_accepted() -> None:
+    # Given / When / Then: The empty prefix and the longest prefix are valid.
+    validate_prefix("")
+    validate_prefix("p" * MAX_PREFIX_LENGTH)
+
+
+@pytest.mark.parametrize(
+    ("prefix", "error"),
+    [
+        pytest.param(b"p", TypeError, id="bytes"),
+        pytest.param("a b", ValueError, id="space"),
+        pytest.param("a\r\nb", ValueError, id="crlf"),
+        pytest.param("p" * (MAX_PREFIX_LENGTH + 1), ValueError, id="too-long"),
+    ],
+)
+def test_invalid_prefix_is_rejected(prefix: object, error: type[Exception]) -> None:
+    # Given: A prefix that cannot be sent on the protocol line.
+
+    # When / Then: Validating the prefix fails.
+    with pytest.raises(error, match="Prefix"):
+        validate_prefix(prefix)  # ty: ignore[invalid-argument-type] # invalid on purpose
 
 
 def test_data_block_may_contain_crlf() -> None:
