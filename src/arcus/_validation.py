@@ -5,6 +5,7 @@ from typing import Final
 
 MAX_KEY_LENGTH: Final = 4_000
 MAX_VKEY_LENGTH: Final = 250
+MAX_PREFIX_LENGTH: Final = 250
 
 # The server takes a 64-bit signed exptime; -1 makes a sticky item that
 # neither expires nor gets evicted.
@@ -50,3 +51,15 @@ def validate_int(name: str, value: int, valid: range) -> None:
         raise TypeError(f"{name} must be int, not {type(value).__name__}")
     if value not in valid:
         raise ValueError(f"{name} must be {valid.start} to {valid.stop - 1}: {value}")
+
+
+def validate_prefix(prefix: str) -> None:
+    if not isinstance(prefix, str):
+        raise TypeError(f"Prefix must be str, not {type(prefix).__name__}")
+    prefix_bytes = prefix.encode()
+    if len(prefix_bytes) > MAX_PREFIX_LENGTH:
+        raise ValueError(
+            f"Prefix must be at most {MAX_PREFIX_LENGTH} bytes: {len(prefix_bytes)}"
+        )
+    if _INVALID_KEY_BYTE.search(prefix_bytes):
+        raise ValueError(f"Prefix contains invalid byte: {prefix_bytes!r}")

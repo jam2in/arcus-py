@@ -1,3 +1,4 @@
+import socket
 from collections.abc import Iterator
 
 import pytest
@@ -6,7 +7,15 @@ from support.fake_discovery import FakeDiscovery
 from support.fake_server import FakeServer
 
 import arcus
-from arcus import Arcus, ArcusError, ArcusServerError, VectorOptions
+from arcus import (
+    Arcus,
+    ArcusClientError,
+    ArcusConnectionError,
+    ArcusError,
+    ArcusErrorGroup,
+    ArcusServerError,
+    VectorOptions,
+)
 from arcus._cluster.locator import ArcusLocator
 
 ZK_HOSTS = "127.0.0.1:2181"
@@ -206,6 +215,105 @@ def test_key_is_stored_on_its_owner_node(discovery_class: MockType) -> None:
     assert holders == [owner]
 
 
+def test_flush_invalidates_items_on_every_node(discovery_class: MockType) -> None:
+    with FakeServer() as first, FakeServer() as second:
+        # Given: A service with two cache nodes that both hold items.
+        serve(discovery_class, first, second)
+        keys = [f"k{i}" for i in range(20)]
+
+        with Arcus(ZK_HOSTS, SERVICE_CODE) as client:
+            for key in keys:
+                client.set(key, "v")
+            assert first.items
+            assert second.items
+
+            # When: Every item is flushed.
+            flushed = client.flush()
+            values = [client.get(key) for key in keys]
+
+    # Then: No item is left on either node.
+    assert flushed is True
+    assert values == [None] * len(keys)
+
+
+def test_flush_with_prefix_invalidates_only_that_prefix(
+    discovery_class: MockType,
+) -> None:
+    with FakeServer() as first, FakeServer() as second:
+        # Given: Two nodes holding items of two prefixes and without one.
+        serve(discovery_class, first, second)
+
+        with Arcus(ZK_HOSTS, SERVICE_CODE) as client:
+            client.set("a:1", "v")
+            client.set("b:1", "v")
+            client.set("plain", "v")
+
+            # When: One prefix, then the items without a prefix, are flushed.
+            flushed = client.flush("a")
+            after_prefix = [client.get(k) for k in ("a:1", "b:1", "plain")]
+            client.flush("", delay=0)
+            after_null = [client.get(k) for k in ("b:1", "plain")]
+            flushed_again = client.flush("a")
+
+    # Then: Each flush leaves the items of other prefixes, and a prefix
+    # with no items left reports that nothing was flushed.
+    assert flushed is True
+    assert flushed_again is False
+    assert after_prefix == [None, "v", "v"]
+    assert after_null == ["v", None]
+
+
+def test_flush_reaches_live_nodes_past_an_unreachable_one(
+    discovery_class: MockType,
+) -> None:
+    # Given: A live node holding items, and a listed node that refuses connections.
+    with socket.socket() as closed:
+        closed.bind(("127.0.0.1", 0))
+        dead = f"127.0.0.1:{closed.getsockname()[1]}"
+
+    with FakeServer() as live:
+        discovery = FakeDiscovery([dead, live.address])
+        discovery_class.return_value = discovery
+
+        live.items[b"a:1"] = b'"v"'
+
+        # When: The cache is flushed by prefix.
+        with (
+            Arcus(ZK_HOSTS, SERVICE_CODE) as client,
+            pytest.raises(ArcusErrorGroup) as exc_info,
+        ):
+            client.flush("a")
+
+    # Then: The live node is flushed, and the error names the unreachable node.
+    assert live.items == {}
+    (error,) = exc_info.value.exceptions
+    assert isinstance(error, ArcusConnectionError)
+    assert error.__notes__ == [f"Cache node: {dead}"]
+
+
+def test_flush_rejected_by_a_node_is_raised_after_the_others(
+    discovery_class: MockType,
+) -> None:
+    with FakeServer() as first, FakeServer() as second:
+        # Given: Two nodes holding items of a prefix, the first rejecting the flush.
+        serve(discovery_class, first, second)
+        first.errors[b"a"] = b"CLIENT_ERROR unauthorized"
+        first.items[b"a:1"] = second.items[b"a:2"] = b'"v"'
+
+        # When: The prefix is flushed.
+        with (
+            Arcus(ZK_HOSTS, SERVICE_CODE) as client,
+            pytest.raises(ArcusErrorGroup) as exc_info,
+        ):
+            client.flush("a")
+
+    # Then: Only the rejecting node keeps its item.
+    assert first.items == {b"a:1": b'"v"'}
+    assert second.items == {}
+    (error,) = exc_info.value.exceptions
+    assert isinstance(error, ArcusClientError)
+
+
 def test_invalid_input_fails_before_discovery(discovery_class: MockType) -> None:
     with Arcus(ZK_HOSTS, SERVICE_CODE) as client:
         # Given / When / Then: Invalid input fails without starting anything.
@@ -215,6 +323,10 @@ def test_invalid_input_fails_before_discovery(discovery_class: MockType) -> None
             client.set("k", None)
         with pytest.raises(ValueError):
             client.set("k", "v", exptime=-2)
+        with pytest.raises(ValueError):
+            client.flush("a b")
+        with pytest.raises(ValueError):
+            client.flush(delay=-1)
 
     discovery_class.assert_not_called()
 

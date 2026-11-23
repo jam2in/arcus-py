@@ -116,3 +116,15 @@ class FakeServer:
                 else:
                     del self.items[index]
                     wfile.write(b"DROPPED\r\n")
+            elif command == b"flush_all":
+                self.items.clear()
+                self.vectors.clear()
+                wfile.write(b"OK\r\n")
+            elif command == b"flush_prefix":
+                # Like the server, a key's prefix ends at its last ":".
+                prefix = b"" if key == b"<null>" else key
+                flushed = [k for k in self.items if k.rpartition(b":")[0] == prefix]
+                for item_key in flushed:
+                    del self.items[item_key]
+                    self.vectors.pop(item_key, None)
+                wfile.write(b"OK\r\n" if flushed else b"NOT_FOUND\r\n")
