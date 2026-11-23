@@ -10,7 +10,12 @@ import pytest
 from pytest_mock import MockerFixture, MockType
 from support.fake_discovery import FakeDiscovery
 
-from arcus import ArcusConnectionError, ArcusError
+from arcus import (
+    ArcusConnectionError,
+    ArcusError,
+    ArcusErrorGroup,
+    ArcusOperationTimeoutError,
+)
 from arcus._cluster.locator import ArcusLocator
 from arcus._cluster.routing import Routing
 from arcus._config import ClientConfig
@@ -239,6 +244,79 @@ def key_owned_by(node: str, nodes: list[str]) -> bytes:
         for key in (f"key-{i}".encode() for i in range(1000))
         if locator.get_node(key) == node
     )
+
+
+def test_execute_all_runs_a_new_exchange_on_every_node(
+    connect: MockType,
+    make_cluster: MakeCluster,
+) -> None:
+    # Given: A cluster with two cache nodes.
+    cluster, _ = make_cluster(FakeDiscovery([NODE_B, NODE_A]))
+
+    # When: An exchange is run on every node.
+    results = cluster.execute_all(ping)
+
+    # Then: Each node runs its own exchange, in address order.
+    assert results == [b"PONG", b"PONG"]
+    assert [call.args for call in connect.call_args_list] == [(NODE_A,), (NODE_B,)]
+
+
+def test_execute_all_runs_past_a_failing_node_and_groups_errors(
+    connect: MockType,
+    make_cluster: MakeCluster,
+    opened: list[SyncConnection],
+) -> None:
+    # Given: A cluster whose first node breaks its connection.
+    cluster, _ = make_cluster(FakeDiscovery([NODE_A, NODE_B]))
+    cluster.execute(key_owned_by(NODE_A, [NODE_A, NODE_B]), ping())
+    sock = opened[0]._socket
+    assert isinstance(sock, Mock)
+    sock.recv.side_effect = ConnectionResetError()
+
+    # When: An exchange is run on every node.
+    with pytest.raises(ArcusErrorGroup, match="1 of 2") as exc_info:
+        cluster.execute_all(ping)
+
+    # Then: The second node still runs, and the error names the first node.
+    assert [call.args for call in connect.call_args_list] == [(NODE_A,), (NODE_B,)]
+    (error,) = exc_info.value.exceptions
+    assert isinstance(error, ArcusConnectionError)
+    assert error.__notes__ == [f"Cache node: {NODE_A}"]
+
+
+def test_execute_all_groups_a_timeout_after_sending(
+    make_cluster: MakeCluster,
+    opened: list[SyncConnection],
+) -> None:
+    # Given: A cluster whose second node never answers.
+    cluster, _ = make_cluster(FakeDiscovery([NODE_A, NODE_B]))
+    cluster.execute(key_owned_by(NODE_B, [NODE_A, NODE_B]), ping())
+    sock = opened[0]._socket
+    assert isinstance(sock, Mock)
+    sock.recv.side_effect = TimeoutError()
+
+    # When: An exchange is run on every node.
+    with pytest.raises(ArcusErrorGroup) as exc_info:
+        cluster.execute_all(ping)
+
+    # Then: The request was sent, and its unknown outcome is reported as a timeout.
+    sock.sendall.assert_called_with(b"ping\r\n")
+    (error,) = exc_info.value.exceptions
+    assert isinstance(error, ArcusOperationTimeoutError)
+    assert error.__notes__ == [f"Cache node: {NODE_B}"]
+
+
+def test_execute_all_without_nodes_fails(
+    connect: MockType,
+    make_cluster: MakeCluster,
+) -> None:
+    # Given: A cluster whose cache list is empty.
+    cluster, _ = make_cluster(FakeDiscovery([]))
+
+    # When / Then: Running on every node fails like a single-key request.
+    with pytest.raises(ArcusConnectionError, match="no cache nodes"):
+        cluster.execute_all(ping)
+    connect.assert_not_called()
 
 
 def test_added_node_receives_its_keys(

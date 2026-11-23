@@ -1,5 +1,6 @@
 import copy
 import os
+from collections.abc import Callable
 from threading import Lock
 from typing import TypeVar
 
@@ -12,6 +13,7 @@ from arcus._transport.sync.pool import SyncConnectionPool
 from arcus.exceptions import (
     ArcusConnectionError,
     ArcusError,
+    ArcusErrorGroup,
     ArcusOperationTimeoutError,
 )
 
@@ -39,6 +41,37 @@ class SyncCluster:
 
     def execute(self, key: bytes, exchange: Exchange[T]) -> T:
         """Run the exchange on a connection to the node that owns the key."""
+        pool = self._current_routing().pool_for(key)
+        return self._run(pool, exchange)
+
+    def execute_all(self, create_exchange: Callable[[], Exchange[T]]) -> list[T]:
+        """
+        Run a new exchange on every node, one node at a time.
+
+        A failing node does not stop the run. Once every node has run,
+        the errors are raised together, each noted with its node.
+        """
+        pools = self._current_routing().pools
+        if not pools:
+            raise ArcusConnectionError("no cache nodes available")
+
+        results: list[T] = []
+        errors: list[ArcusError] = []
+        for address, pool in pools.items():
+            try:
+                results.append(self._run(pool, create_exchange()))
+            except ArcusError as error:
+                error.add_note(f"Cache node: {address}")
+                errors.append(error)
+
+        if errors:
+            raise ArcusErrorGroup(
+                f"Failed on {len(errors)} of {len(pools)} cache nodes", errors
+            )
+        return results
+
+    def _current_routing(self) -> Routing[SyncConnectionPool]:
+        """Return the routing for a new request, initializing if needed."""
         if self._is_forked():
             self._reset_after_fork()
         routing = self._routing
@@ -47,8 +80,10 @@ class SyncCluster:
         self._raise_if_closed()
         if routing is None:
             routing = self._initialize()
-        pool = routing.pool_for(key)
+        return routing
 
+    def _run(self, pool: SyncConnectionPool, exchange: Exchange[T]) -> T:
+        """Run the exchange on a connection from the pool."""
         connection = pool.acquire()
         try:
             return connection.execute(exchange)
