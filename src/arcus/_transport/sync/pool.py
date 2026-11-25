@@ -52,8 +52,8 @@ class SyncConnectionPool:
         with self._condition:
             while True:
                 self._raise_if_closed()
-                if self._idle:
-                    connection = self._idle.pop()
+                connection = self._take_idle()
+                if connection is not None:
                     self._in_use.add(connection)
                     return connection
                 if self._size < self._max_size:
@@ -120,6 +120,20 @@ class SyncConnectionPool:
             connection.close()
         for connection in in_use:
             connection.abort()
+
+    def _take_idle(self) -> SyncConnection | None:
+        """
+        Pop the newest idle connection the node has not closed.
+
+        Closes the ones it has, e.g. after a node restart. Caller holds the lock.
+        """
+        while self._idle:
+            connection = self._idle.pop()
+            if connection.is_reusable():
+                return connection
+            self._size -= 1
+            connection.close()
+        return None
 
     def _raise_if_closed(self) -> None:
         if self._close_reason is not None:

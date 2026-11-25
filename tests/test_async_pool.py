@@ -17,6 +17,8 @@ SETTLE = 0.05
 def connect(mocker: MockerFixture) -> MockType:
     async def open_connection(address: str) -> AsyncConnection:
         reader = mocker.Mock(spec=asyncio.StreamReader)
+        reader.at_eof.return_value = False
+        reader.exception.return_value = None
         writer = mocker.Mock(spec=asyncio.StreamWriter)
         return AsyncConnection(address, reader, writer, socket_timeout=5)
 
@@ -40,6 +42,10 @@ def make_pool(
 
 def transport_of(connection: AsyncConnection) -> MockType:
     return cast(MockType, connection._writer.transport)
+
+
+def reader_of(connection: AsyncConnection) -> MockType:
+    return cast(MockType, connection._reader)
 
 
 def stall_first_connect(connect: MockType) -> None:
@@ -111,6 +117,47 @@ async def test_broken_connection_is_aborted_on_release(connect: MockType) -> Non
     transport_of(broken).abort.assert_called_once()
     assert connection is not broken
     assert connect.await_count == 2
+
+
+async def test_idle_connection_closed_by_node_is_replaced(
+    connect: MockType,
+) -> None:
+    # Given: An idle connection that the node closed, e.g. on restart.
+    pool = make_pool(connect, max_size=1)
+    closed = await pool.acquire()
+    pool.release(closed)
+    reader_of(closed).at_eof.return_value = True
+
+    # When: A connection is acquired.
+    connection = await pool.acquire()
+
+    # Then: The closed one is aborted and a new one is opened.
+    transport_of(closed).abort.assert_called_once()
+    assert connection is not closed
+    assert connect.await_count == 2
+    assert pool.in_use == 1
+    assert pool.idle == 0
+
+
+async def test_closed_idle_connection_is_skipped_for_open_one(
+    connect: MockType,
+) -> None:
+    # Given: Two idle connections, the newer one reset by the node.
+    pool = make_pool(connect)
+    open_one = await pool.acquire()
+    closed = await pool.acquire()
+    pool.release(open_one)
+    pool.release(closed)
+    reader_of(closed).exception.return_value = ConnectionResetError()
+
+    # When: A connection is acquired.
+    connection = await pool.acquire()
+
+    # Then: The reset one is aborted and the open one is lent.
+    transport_of(closed).abort.assert_called_once()
+    assert connection is open_one
+    assert connect.await_count == 2
+    assert pool.idle == 0
 
 
 async def test_acquire_times_out_when_pool_is_full(connect: MockType) -> None:

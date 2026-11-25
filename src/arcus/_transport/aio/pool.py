@@ -55,9 +55,8 @@ class AsyncConnectionPool:
 
         try:
             self._raise_if_closed()
-            if self._idle:
-                connection = self._idle.pop()
-            else:
+            connection = self._take_idle()
+            if connection is None:
                 connection = await self._connect(self.address)
                 if self._close_reason is not None:
                     connection.abort()
@@ -98,6 +97,19 @@ class AsyncConnectionPool:
         if abort_in_use:
             for connection in self._in_use:
                 connection.abort()
+
+    def _take_idle(self) -> AsyncConnection | None:
+        """
+        Pop the newest idle connection the node has not closed.
+
+        Aborts the ones it has, e.g. after a node restart.
+        """
+        while self._idle:
+            connection = self._idle.pop()
+            if connection.is_reusable():
+                return connection
+            connection.abort()
+        return None
 
     def _raise_if_closed(self) -> None:
         if self._close_reason is not None:

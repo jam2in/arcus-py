@@ -66,6 +66,23 @@ class SyncConnection:
         with contextlib.suppress(OSError):
             self._socket.shutdown(socket.SHUT_RDWR)
 
+    def is_reusable(self) -> bool:
+        """Report whether the node has not closed this idle connection."""
+        if self.broken:
+            return False
+        timeout = self._socket.gettimeout()
+        self._socket.settimeout(0)
+        try:
+            self._socket.recv(1, socket.MSG_PEEK)
+        except BlockingIOError:
+            return True
+        except OSError:
+            return False
+        finally:
+            self._socket.settimeout(timeout)
+        # End of stream, or bytes the node sent without a request.
+        return False
+
     def send(self, data: bytes) -> None:
         """Send all bytes without modifying the payload"""
         try:
