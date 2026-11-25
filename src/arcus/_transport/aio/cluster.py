@@ -5,6 +5,7 @@ from typing import TypeVar
 
 from arcus._cluster.discovery import ArcusDiscovery
 from arcus._cluster.routing import Routing
+from arcus._cluster.shard import CacheList
 from arcus._config import ClientConfig
 from arcus._protocol.request import Exchange
 from arcus._transport.aio.connection import AsyncConnection
@@ -131,9 +132,9 @@ class AsyncCluster:
         finally:
             self._init_task = None
 
-    def _on_nodes_changed(self, nodes: list[str]) -> None:
+    def _on_nodes_changed(self, cache_list: CacheList) -> None:
         """
-        Pass a node list from the ZooKeeper watch to the event loop.
+        Pass a cache list from the ZooKeeper watch to the event loop.
 
         Only the ZooKeeper watch calls this, one call at a time,
         so the lists reach the loop in order.
@@ -142,15 +143,15 @@ class AsyncCluster:
         assert loop is not None  # execute() binds the loop before discovery starts
         # The loop is closed if the application stopped it without aclose().
         with contextlib.suppress(RuntimeError):
-            loop.call_soon_threadsafe(self._apply_nodes, nodes)
+            loop.call_soon_threadsafe(self._apply_nodes, cache_list)
 
-    def _apply_nodes(self, nodes: list[str]) -> None:
-        """Publish routing for the nodes and close the pools of removed nodes."""
+    def _apply_nodes(self, cache_list: CacheList) -> None:
+        """Publish routing for the cache list and close the pools of removed nodes."""
         if self._closed:
             return
 
         current = self._routing or Routing()
-        routing = current.with_nodes(nodes, self._create_pool)
+        routing = current.with_shards(cache_list, self._create_pool)
         self._routing = routing
 
         for pool in current.pools_missing_from(routing):

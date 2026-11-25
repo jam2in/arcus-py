@@ -3,6 +3,13 @@
 import threading
 from collections.abc import Callable
 
+from arcus._cluster.shard import CacheList, Shard
+
+
+def cache_list_of(addresses: list[str]) -> CacheList:
+    """Return the cache list of nodes without replication at these addresses."""
+    return CacheList({address: Shard(address, address) for address in addresses})
+
 
 class FakeDiscovery:
     def __init__(
@@ -20,9 +27,9 @@ class FakeDiscovery:
         if not block:
             self.proceed.set()
         self.stopped = False
-        self._on_change: Callable[[list[str]], None] | None = None
+        self._on_change: Callable[[CacheList], None] | None = None
 
-    def start(self, on_change: Callable[[list[str]], None]) -> None:
+    def start(self, on_change: Callable[[CacheList], None]) -> None:
         self._on_change = on_change
         self.entered.set()
         self.proceed.wait()
@@ -31,7 +38,7 @@ class FakeDiscovery:
             raise self.error
         # Like ChildrenWatch, deliver the first list before returning.
         if self.nodes is not None:
-            on_change(list(self.nodes))
+            on_change(cache_list_of(self.nodes))
 
     def stop(self) -> None:
         self.stopped = True
@@ -39,4 +46,4 @@ class FakeDiscovery:
     def change(self, nodes: list[str]) -> None:
         """Deliver a node list change the way the ZooKeeper watch would."""
         assert self._on_change is not None
-        self._on_change(nodes)
+        self._on_change(cache_list_of(nodes))

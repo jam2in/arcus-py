@@ -21,18 +21,18 @@ def _is_valid_address(address: str) -> bool:
     )
 
 
-def parse_cache_list(children: list[str]) -> list[str]:
-    addresses: set[str] = set()
+def parse_cache_list(children: list[str]) -> CacheList:
+    """Turn ``<ip:port>-<hostname>`` znodes into shards named by address."""
+    shards: dict[str, Shard] = {}
 
     for child in children:
         address = child.partition("-")[0]
         if not _is_valid_address(address):
             logger.warning(f"Ignoring invalid cache node {child}")
             continue
+        shards[address] = Shard(address, address)
 
-        addresses.add(address)
-
-    return sorted(addresses)
+    return CacheList(shards)
 
 
 def parse_repl_cache_list(children: list[str]) -> CacheList:
@@ -101,9 +101,9 @@ class ArcusDiscovery:
         self._closed: bool = False
 
         # Assigned in start() before registering the watch.
-        self._on_change: Callable[[list[str]], None]
+        self._on_change: Callable[[CacheList], None]
 
-    def start(self, on_change: Callable[[list[str]], None]) -> None:
+    def start(self, on_change: Callable[[CacheList], None]) -> None:
         """
         Connect to ZooKeeper and pass each cache list to on_change.
 

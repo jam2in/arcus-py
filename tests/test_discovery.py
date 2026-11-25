@@ -8,6 +8,7 @@ from kazoo.handlers.threading import KazooTimeoutError
 from kazoo.protocol.states import EventType, KazooState, WatchedEvent
 from kazoo.retry import KazooRetry
 from pytest_mock import MockerFixture, MockType
+from support.fake_discovery import cache_list_of
 
 from arcus import ArcusConnectionError
 from arcus._cluster.discovery import ArcusDiscovery
@@ -75,9 +76,8 @@ def test_start_notifies_initial_cache_nodes(
         # When: Discovery starts.
         discovery.start(on_change)
 
-        # Then: It notifies the consumer of the sorted addresses
-        # before returning.
-        on_change.assert_called_once_with(EXPECTED_ADDRESSES)
+        # Then: It notifies the consumer of the cache nodes before returning.
+        on_change.assert_called_once_with(cache_list_of(EXPECTED_ADDRESSES))
         zk_client.exists.assert_called_once_with(SERVICE_PATH)
         zk_client.get_children.assert_called_once_with(
             SERVICE_PATH,
@@ -121,7 +121,7 @@ def test_watch_notifies_changes_and_registers_again(
         watch(CHILD_EVENT)
 
         # Then: It notifies the consumer and registers the watch again.
-        on_change.assert_called_once_with(expected)
+        on_change.assert_called_once_with(cache_list_of(expected))
         assert zk_client.get_children.call_count == 2
         zk_client.get_children.assert_called_with(SERVICE_PATH, watch)
     finally:
@@ -159,11 +159,11 @@ def test_reconnect_reads_nodes_changed_while_disconnected(
         # Then: It reads the nodes only after reconnecting, notifies the
         # consumer, and registers the watch again.
         assert zk_client.get_children.call_count == 2
-        on_change.assert_called_once_with(["127.0.0.1:11214"])
+        on_change.assert_called_once_with(cache_list_of(["127.0.0.1:11214"]))
 
         zk_client.get_children.return_value = ["127.0.0.1:11215-cache5"]
         _child_watch(zk_client)(CHILD_EVENT)
-        on_change.assert_called_with(["127.0.0.1:11215"])
+        on_change.assert_called_with(cache_list_of(["127.0.0.1:11215"]))
     finally:
         discovery.stop()
 
@@ -194,7 +194,7 @@ def test_watch_retries_lookup_and_keeps_watching(
         watch(CHILD_EVENT)
 
         # Then: The retry applies the new list and registers another watch.
-        on_change.assert_called_once_with(["127.0.0.1:11214"])
+        on_change.assert_called_once_with(cache_list_of(["127.0.0.1:11214"]))
         assert zk_client.get_children.call_count == 5
         zk_client.get_children.assert_called_with(SERVICE_PATH, watch)
 
@@ -203,7 +203,7 @@ def test_watch_retries_lookup_and_keeps_watching(
         zk_client.get_children.return_value = ["127.0.0.1:11215-cache5"]
         _child_watch(zk_client)(CHILD_EVENT)
 
-        on_change.assert_called_with(["127.0.0.1:11215"])
+        on_change.assert_called_with(cache_list_of(["127.0.0.1:11215"]))
         assert on_change.call_count == 2
         assert zk_client.get_children.call_count == 6
     finally:
@@ -228,7 +228,7 @@ def test_watch_applies_next_change_after_callback_failure(
         watch(CHILD_EVENT)
 
         # Then: Another watch is already registered.
-        on_change.assert_called_once_with(["127.0.0.1:11214"])
+        on_change.assert_called_once_with(cache_list_of(["127.0.0.1:11214"]))
         assert zk_client.get_children.call_count == 2
         zk_client.get_children.assert_called_with(SERVICE_PATH, watch)
 
@@ -238,7 +238,7 @@ def test_watch_applies_next_change_after_callback_failure(
         _child_watch(zk_client)(CHILD_EVENT)
 
         # Then: The new list is applied and watching continues.
-        on_change.assert_called_with(["127.0.0.1:11215"])
+        on_change.assert_called_with(cache_list_of(["127.0.0.1:11215"]))
         assert on_change.call_count == 2
         assert zk_client.get_children.call_count == 3
         zk_client.get_children.assert_called_with(SERVICE_PATH, watch)
