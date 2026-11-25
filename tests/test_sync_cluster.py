@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, Mock
 
 import pytest
 from pytest_mock import MockerFixture, MockType
-from support.fake_discovery import FakeDiscovery
+from support.fake_discovery import FakeDiscovery, cache_list_of
 
 from arcus import (
     ArcusConnectionError,
@@ -541,7 +541,9 @@ def test_routing_published_after_close_is_not_used(
     cluster, _ = make_cluster(FakeDiscovery([NODE_A]))
     cluster.execute(b"k", ping())
     cluster.close()
-    cluster._routing = Routing().with_nodes([NODE_B], cluster._create_pool)
+    cluster._routing = Routing().with_shards(
+        cache_list_of([NODE_B]), cluster._create_pool
+    )
 
     # When / Then: Requests are rejected without connecting.
     with pytest.raises(ArcusError, match="client is closed"):

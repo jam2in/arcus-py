@@ -6,6 +6,7 @@ from typing import TypeVar
 
 from arcus._cluster.discovery import ArcusDiscovery
 from arcus._cluster.routing import Routing
+from arcus._cluster.shard import CacheList
 from arcus._config import ClientConfig
 from arcus._protocol.request import Exchange
 from arcus._transport.sync.connection import SyncConnection
@@ -172,9 +173,9 @@ class SyncCluster:
         self._discovery = discovery
         return routing
 
-    def _on_nodes_changed(self, nodes: list[str]) -> None:
+    def _on_nodes_changed(self, cache_list: CacheList) -> None:
         """
-        Publish routing for the nodes and close the pools of removed nodes.
+        Publish routing for the cache list and close the pools of removed nodes.
 
         Only the ZooKeeper watch calls this, one call at a time.
         """
@@ -182,7 +183,7 @@ class SyncCluster:
             return
 
         current = self._routing or Routing()
-        routing = current.with_nodes(nodes, self._create_pool)
+        routing = current.with_shards(cache_list, self._create_pool)
         self._routing = routing
 
         for pool in current.pools_missing_from(routing):

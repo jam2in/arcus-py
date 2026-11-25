@@ -10,6 +10,7 @@ from support.fake_discovery import FakeDiscovery
 
 from arcus import ArcusConnectionError, ArcusError
 from arcus._cluster.locator import ArcusLocator
+from arcus._cluster.shard import CacheList
 from arcus._config import ClientConfig
 from arcus._protocol.request import Exchange, ReadLine, Write
 from arcus._transport.aio.cluster import AsyncCluster
@@ -246,9 +247,9 @@ async def test_change_from_zookeeper_thread_applies_on_loop_thread(
     applied_on: list[int] = []
     apply_nodes = cluster._apply_nodes
 
-    def record_thread(nodes: list[str]) -> None:
+    def record_thread(cache_list: CacheList) -> None:
         applied_on.append(threading.get_ident())
-        apply_nodes(nodes)
+        apply_nodes(cache_list)
 
     mocker.patch.object(cluster, "_apply_nodes", side_effect=record_thread)
 
